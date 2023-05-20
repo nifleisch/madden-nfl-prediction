@@ -54,22 +54,6 @@ python combine_madden_ratings.py
 
 Upon the successful execution of the script, the resultant file will be stored in the `processed_data` directory. This file amalgamates all the datasets, ensuring the harmonized attribute names and structure for easy analysis and processing.
 
-## Dependencies
-
-This script uses the following Python libraries:
-
-- requests
-- pandas
-- beautifulsoup4
-- tqdm
-- openpyxl
-
-You can install these using pip:
-
-```bash
-pip install -r requirements.txt
-```
-
 ## License
 
 This project is open-source and available to everyone under the [MIT License](https://opensource.org/licenses/MIT).
