@@ -52,7 +52,7 @@ To consolidate your downloaded data into a single, unified .csv file, you can ut
 python combine_madden_ratings.py
 ```
 
-Upon the successful execution of the script, the resultant file will be stored in the `processed_data` directory. This file amalgamates all the datasets, ensuring the harmonized attribute names and structure for easy analysis and processing.
+Upon the successful execution of the script, the resultant file will be stored in the `processed_data` directory. 
 
 ## License
 
@@ -61,8 +61,6 @@ This project is open-source and available to everyone under the [MIT License](ht
 ## Contribution
 
 Pull requests are welcome. For major changes, please open an issue first to discuss what you would like to change.
-
-Please make sure to update tests as appropriate.
 
 ## Acknowledgments
 
