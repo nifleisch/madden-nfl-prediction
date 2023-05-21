@@ -52,9 +52,6 @@ def main(start_year, end_year):
     url_list =  [domain + f"madden-nfl-20{str(i).zfill(2)}.html" for i in range(start_year, min(6, end_year + 1))] + \
                 [domain + f"madden-nfl-{str(i).zfill(2)}.html" for i in range(max(6, start_year), end_year + 1)]
 
-    if 14 in range(start_year, end_year + 1):
-        url_list.append(domain + "madden-nfl-25.html")
-
     # Directory for saving data
     data_dir = "madden_data"
     os.makedirs(data_dir, exist_ok=True)
