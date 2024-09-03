@@ -5,7 +5,7 @@ import re
 import fnmatch
 
 
-EXCLUDED_FILES = ["*free_agent*", "*madden_elites*", "*roster_update*", "*all-25*", "*full_player_ratings.csv*", "*pro_bowl*", "*madden_legends*", 
+EXCLUDED_FILES = ["*free_agent*", "*madden_elites*", "*roster_update*", "*all-25*", "*full_player_ratings.csv*", "*pro_bowl*", "*madden_legends*",
                   "*rookie*", "*final_ratings.csv*", "*canton_greats*", "*madden_nfl_23_player_ratings*", "*nfl_19_-_full_player_ratings*"]
 
 ATTR_MAP = {
@@ -20,7 +20,7 @@ ATTR_MAP = {
     "strength": ["strength", "stength"],
     "throw_power": ["throw_power", "throwpower"],
     "throw_accuracy_short": ["throw_accuracy_short", "short_throw_accuracy", "throwaccuracyshortrating", "short_accuracy"],
-    "throw_accuracy_middle": ["throw_accuracy_middle", "medium_throw_accuracy", "throw_accuracy_medium","throw_accuracy_mid", "throw_accuracy_med", 
+    "throw_accuracy_middle": ["throw_accuracy_middle", "medium_throw_accuracy", "throw_accuracy_medium","throw_accuracy_mid", "throw_accuracy_med",
                                 "throwaccuracymidrating", "middle_accuracy"],
     "throw_accuracy_deep": ["throw_accuracy_deep", "deep_throw_accuracy", "throwaccuracydeeprating", "deep_throw_accruacy", "deep_accuracy"],
     "throw_accuracy": ["throw_accuracy", "throwaccuracy"],
@@ -77,28 +77,26 @@ ATTR_MAP = {
     "last_name": ["last"],
     "full_name": ["full_name", "fullname", "name"],
     "tackle": ["tackle"],
-    "catching": ["catching"],
-    "carrying": ["carrying"],
     "pursuit": ["pursuit"],
-    "madden": ["madden"], 
-    "salary": ["salary", "total_salary"], 
+    "madden": ["madden"],
+    "salary": ["salary", "total_salary"],
     "height": ["height"],
-    "morale": ["morale"], 
+    "morale": ["morale"],
     "weight": ["weight"],
     "jersey_number": ["jersey", "number"],
     "age": ["age"],
     "parsed_team": ["parsed_team"]
 }
 
-ATTR_ORDER = ["madden", "team", "parsed_team", "first_name", "last_name", "full_name", "position", "jersey_number", "salary", "age", "weight", "height", 
+ATTR_ORDER = ["madden", "team", "parsed_team", "first_name", "last_name", "full_name", "position", "jersey_number", "salary", "age", "weight", "height",
               "overall_rating", "awareness", "speed", "acceleration", "agility", "jumping", "strength", "throw_power", "throw_accuracy_short",
               "throw_accuracy_middle", "throw_accuracy_deep", "throw_accuracy", "throw_under_pressure", "throw_on_the_run", "ball_carrier_vision",
               "play_action", "toughness", "carrying", "elusiveness", "break_tackle", "trucking", "spin_move", "juke_move", "break_sack", "stiff_arm",
               "catching", "catch_in_traffic", "short_route_running", "medium_route_running", "deep_route_running", "route_running", "spectacular_catch",
-              "impact_blocking", "lead_blocking", "run_block_power", "pass_block_power", "play_recognition", "power_moves", "pass_block_finesse", 
+              "impact_blocking", "lead_blocking", "run_block_power", "pass_block_power", "play_recognition", "power_moves", "pass_block_finesse",
               "run_block_finesse", "run_block_strength", "run_block_footwork", "pass_block_strength", "pass_block_footwork", "run_block", "pass_block",
               "release", "hit_power", "finessee_move", "block_shedding", "man_coverage", "zone_coverage", "press", "kick_power", "kick_accuracy",
-              "kick_return", "stamina", "injury", "player_handedness", "running_style", "archetype", "tackle", "catching", "carrying", "pursuit",
+              "kick_return", "stamina", "injury", "player_handedness", "running_style", "archetype", "tackle", "pursuit",
               "morale"]
 
 
@@ -107,7 +105,7 @@ def unify_attr_name(name: str) -> str:
 
     for splitter in [" ", "-", "_"]:
         name = name.replace(splitter, "_")
-    
+
     if name.endswith("_rating"):
         name = name[:-7]
     if name.startswith("plyr_"):
