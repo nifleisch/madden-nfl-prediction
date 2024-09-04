@@ -1,0 +1,23 @@
+---
+title: "test"
+author: "Nils Fleischmann"
+date: "1/5/2023"
+output: html_document
+---
+
+```{r}
+library(tidyverse)
+library(nflreadr)
+library(lubridate)
+library(janitor)
+library(geosphere)
+```
+
+
+```{r}
+madden_enriched_path <- file.path("..","..","data", "processed_data", "madden_with_depth_team.csv")
+
+depth_team_snap_pct_path <- file.path("..","..","data", "processed_data", "depth_team_snap_pct.csv")
+read_csv(depth_team_snap_pct, depth_team_snap_pct_path)
+```
+

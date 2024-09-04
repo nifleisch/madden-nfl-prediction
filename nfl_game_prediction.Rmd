@@ -1,0 +1,2179 @@
+---
+title: "All steps one notebook"
+output: html_notebook
+---
+# 0. Load packages
+```{r message = FALSE, warning=FALSE}
+library(tidyverse)
+library(nflreadr)
+library(lubridate)
+library(lubridate)
+library(janitor)
+library(geosphere)
+library(readxl)
+library(modelr)
+library(tidymodels)  # for the parsnip package, along with the rest of tidymodels
+library(readr)       # for importing data
+library(broom.mixed) # for converting bayesian models to tidy tibbles
+library(dotwhisker)  # for visualizing regression results
+library(skimr)           # for variable summaries
+```
+
+# 1. Load and Preprocess PbP Data
+Load play by play data and transform it into game_data
+```{r message = FALSE, warning=FALSE}
+pbp_data <- load_pbp(2003:2022)
+
+game_data <- pbp_data %>% 
+  select(play_id, game_id, yards_gained, old_game_id, home_team, away_team, season_type, 
+         week, posteam, yardline_100, game_date, qtr, down, ydstogo, ydsnet, play_type, 
+         field_goal_result, kick_distance, extra_point_result, two_point_conv_result, ep, 
+         epa, total_home_epa, total_away_epa, total_home_rush_epa, total_away_rush_epa, 
+         total_home_pass_epa, total_away_pass_epa, third_down_converted, third_down_failed, 
+         fourth_down_converted, fourth_down_failed, incomplete_pass, interception, fumble_forced, 
+         fumble_not_forced, qb_hit, rush_attempt, pass_attempt, sack, pass_touchdown, rush_touchdown, 
+         two_point_attempt, field_goal_attempt,fumble, passing_yards, rushing_yards, penalty_yards, 
+         penalty_team, season, start_time, play_type_nfl, drive_time_of_possession, fixed_drive_result, 
+         away_score, home_score, div_game, roof, surface, temp, wind, stadium_id, game_stadium) %>% 
+  mutate(
+    home_penalty_yards = if_else(penalty_team == home_team, penalty_yards, 0), 
+    away_penalty_yards = if_else(penalty_team != home_team, penalty_yards, 0),
+    pass_yards_gained = if_else(play_type == "pass", yards_gained, NULL),
+    run_yards_gained = if_else(play_type == "run", yards_gained, NULL), 
+    run_attempt = if_else(play_type == "run", 1, 0),
+    field_goal_made = if_else(field_goal_result == "made", 1, 0),
+    extra_point_good = if_else(extra_point_result == "good", 1, 0),
+    pass_epa = if_else(play_type == "pass", epa, NULL), 
+    rush_epa = if_else(play_type == "run", epa, NULL)
+  ) %>% 
+  group_by(game_id, old_game_id, home_team, away_team, season_type, week, posteam, game_date, season, 
+           start_time, away_score, home_score, div_game, roof, surface, stadium_id, game_stadium) %>%
+  summarize(
+    avg_epa = mean(epa, na.rm = TRUE),
+    avg_pass_epa = mean(pass_epa, na.rm = TRUE),
+    avg_rush_epa = mean(rush_epa, na.rm = TRUE),
+    n_third_down_converted = sum(third_down_converted, na.rm = TRUE),
+    n_third_down_failed = sum(third_down_failed, na.rm = TRUE),
+    n_fourth_down_converted = sum(fourth_down_converted, na.rm = TRUE),
+    n_fourth_down_failed = sum(fourth_down_failed, na.rm = TRUE),
+    n_pass_attempts = sum(pass_attempt, na.rm = TRUE),
+    n_run_attempts = sum(run_attempt, na.rm = TRUE),
+    n_incomplete_pass = sum(incomplete_pass, na.rm = TRUE),
+    n_interception = sum(interception, na.rm = TRUE),
+    n_fumble_forced = sum(fumble_forced, na.rm = TRUE),
+    n_fumble_not_forced = sum(fumble_not_forced, na.rm = TRUE),
+    n_qb_hit = sum(qb_hit, na.rm = TRUE),
+    n_sacks = sum(sack, na.rm = TRUE),
+    n_two_point_attempts = sum(two_point_attempt, na.rm = TRUE),
+    n_field_goal_attempts = sum(field_goal_attempt, na.rm = TRUE),
+    n_fumbles = sum(fumble, na.rm = TRUE),
+    sum_home_penalty_yards = sum(home_penalty_yards, na.rm = TRUE),
+    sum_away_penalty_yards = sum(away_penalty_yards, na.rm = TRUE),
+    n_pass_touchdown = sum(pass_touchdown, na.rm = TRUE),
+    n_rush_touchdown = sum(rush_touchdown, na.rm = TRUE),
+    field_goal_success_rate = mean(field_goal_made, na.rm = TRUE),
+    extra_point_success_rate = mean(extra_point_good, na.rm = TRUE),
+    avg_pass_yards_gained = mean(pass_yards_gained, na.rm = TRUE),
+    avg_run_yards_gained = mean(run_yards_gained, na.rm = TRUE),
+    temp = first(na.omit(temp)), 
+    wind = first(na.omit(wind))
+  ) %>% 
+  ungroup() %>% 
+  filter(!is.na(posteam)) %>% 
+  mutate(
+    third_down_conversion_rate = n_third_down_converted / (n_third_down_converted + n_third_down_failed),
+    fourth_down_attempts = n_fourth_down_converted + n_fourth_down_failed, 
+    fourth_down_conversion_rate = n_fourth_down_converted / fourth_down_attempts,
+    percentage_pass_attemps = n_pass_attempts / (n_pass_attempts + n_run_attempts),
+    percentage_run_attemps = n_run_attempts / (n_pass_attempts + n_run_attempts),
+    percentage_incomplete_pass = n_incomplete_pass / n_pass_attempts,
+    percentage_interception = n_interception / n_pass_attempts,
+    n_attempts = n_pass_attempts + n_run_attempts,
+    percentage_fumbles = n_fumbles / n_attempts,
+    percentage_qb_hits = n_qb_hit/ n_attempts,
+    percentage_sacks = n_sacks/ n_attempts,
+    n_touchdowns = n_pass_touchdown + n_rush_touchdown,
+    pass_touchdown_rate = n_pass_touchdown / n_touchdowns,
+    offense= if_else(home_team == posteam, home_team, away_team),
+    defense = if_else(home_team == posteam, away_team, home_team)
+  ) %>% 
+  pivot_longer(c(offense, defense), names_to = "platoon", values_to = "team")
+
+```
+
+Subset def_game_data from game_data
+```{r message = FALSE, warning=FALSE}
+def_game_data <- game_data %>% 
+  filter(platoon == "defense") %>% 
+  mutate(
+    points_allowed = if_else(team == home_team, away_score, home_score),
+    penalty_yards = if_else(team == home_team, sum_home_penalty_yards, sum_away_penalty_yards),
+    rush_touchdowns_allowed = n_rush_touchdown,
+    pass_touchdowns_allowed = n_pass_touchdown,
+    touchdowns_allowed = n_touchdowns,
+    avg_pass_yards_allowed = avg_pass_yards_gained,
+    avg_run_yards_allowed = avg_run_yards_gained,
+    third_down_success_rate = 1 - third_down_conversion_rate,
+    fourth_down_success_rate = 1 - fourth_down_conversion_rate,
+    percentage_incomplete_passes_forced = 1 - percentage_incomplete_pass
+  ) %>% 
+  select(game_id, old_game_id, season, week, season_type, team, points_allowed, avg_epa, avg_rush_epa, 
+         avg_pass_epa, third_down_success_rate, fourth_down_success_rate, 
+         percentage_incomplete_passes_forced, n_incomplete_pass, n_interception, n_fumble_forced, 
+         n_qb_hit, n_sacks, penalty_yards, rush_touchdowns_allowed, pass_touchdowns_allowed, 
+         touchdowns_allowed, avg_pass_yards_allowed, avg_run_yards_allowed, percentage_incomplete_passes_forced, 
+         percentage_interception, percentage_qb_hits, percentage_sacks)
+
+```
+
+Subset off_game_data from game_data
+```{r message = FALSE, warning=FALSE}
+off_game_data <- game_data %>% 
+  filter(platoon == "offense") %>%
+  mutate(
+    points_scored = if_else(team == home_team, home_score, away_score),
+    penalty_yards = if_else(team == home_team, sum_home_penalty_yards, sum_away_penalty_yards)
+  ) %>% 
+  select(game_id, season, week, season_type, team, points_scored, avg_epa, avg_rush_epa, avg_pass_epa, 
+         n_third_down_converted, n_third_down_failed, n_fourth_down_converted, n_fourth_down_failed, 
+         n_interception, n_qb_hit, n_sacks, n_fumbles, penalty_yards, n_pass_touchdown, n_rush_touchdown, 
+         field_goal_success_rate, extra_point_success_rate, avg_pass_yards_gained, avg_run_yards_gained, 
+         third_down_conversion_rate, fourth_down_conversion_rate, percentage_pass_attemps, 
+         percentage_incomplete_pass, percentage_interception, percentage_fumbles, percentage_qb_hits,
+         percentage_sacks, n_touchdowns, pass_touchdown_rate)
+
+```
+
+Subset meta_game_data from game_data
+```{r message = FALSE, warning=FALSE}
+meta_game_data <- game_data %>% 
+  select(game_id, old_game_id, season, game_date, start_time, week, season_type, home_team, away_team, 
+         div_game, roof, surface, stadium_id, game_stadium, temp, wind) %>% 
+  distinct() %>% 
+  mutate(
+    game_time = str_c(game_date, start_time, sep=" "),
+    game_time = parse_date_time(game_time, "ymd HMS")) %>% 
+  pivot_longer(
+    cols=c(home_team, away_team), 
+    names_to = "home_away", 
+    values_to = "team") %>% 
+  group_by(team) %>% 
+  arrange(team, game_time) %>% 
+  mutate(
+    lagged_game_time = lag(game_time, n = 1, default = NA),
+    rest_time = interval(lagged_game_time, game_time) %/% hours(1),
+    rest_time = if_else(is.na(rest_time) | rest_time > 500, 168, rest_time), 
+    weekday = wday(game_time, label = T),
+    monday_game = weekday == "Mon",
+    thursday_game = weekday == "Thu"
+  ) %>% 
+  select(-c(lagged_game_time, weekday)) %>% 
+  pivot_wider(
+    id_cols = -c(home_away, team, rest_time), 
+    names_from = home_away, 
+    values_from = c(team,rest_time)) %>% 
+  rename(c(away_team = team_away_team, home_team = team_home_team))
+```
+
+Checkpoint
+```{r message = FALSE, warning=FALSE}
+game_data_path <- file.path("..","..","data", "processed_data", "game_data.csv")
+offense_game_data_path <- file.path("..","..","data", "processed_data", "offense_game_data.csv")
+defense_game_data_path <- file.path("..","..","data", "processed_data", "defense_game_data.csv")
+meta_game_data_path <- file.path("..","..","data", "processed_data", "meta_game_data.csv")
+
+write_csv(game_data, game_data_path)
+write_csv(off_game_data, offense_game_data_path)
+write_csv(def_game_data, defense_game_data_path)
+write_csv(meta_game_data, meta_game_data_path)
+```
+
+# 2. Feature Engineering
+Load Data
+```{r message = FALSE, warning=FALSE}
+offense_game_data_path <- file.path("..","..","data", "processed_data", "offense_game_data.csv")
+defense_game_data_path <- file.path("..","..","data", "processed_data", "defense_game_data.csv")
+meta_game_data_path <- file.path("..","..","data", "processed_data", "meta_game_data.csv")
+weather_data_path <- file.path("..","..","data", "raw_data", "tom_bliss", "games_weather.csv")
+stadium_data_path <- file.path("..","..","data", "raw_data", "tom_bliss", "stadium_coordinates.csv")
+stadium_game_data_path <- file.path("..","..","data", "raw_data", "tom_bliss", "games.csv")
+elo_data_path <- file.path("..","..","data","raw_data","fivethirtyeight","nfl_games.csv")
+
+off_game_data <- read_csv(offense_game_data_path)
+def_game_data <- read_csv(defense_game_data_path)
+meta_game_data <- read_csv(meta_game_data_path)
+weather_data <- read_csv(weather_data_path) %>% 
+  clean_names()
+stadium_data <- read_csv(stadium_data_path) %>% 
+  clean_names() %>% 
+  select(-home_team) %>% 
+  distinct()
+new_game_data <- read_csv(stadium_game_data_path) %>%
+  clean_names()
+elo_data <- read_csv(elo_data_path) %>% 
+  filter(season >= 2004) %>% 
+  select(season, date, team1, team2, elo1, elo2, elo_prob1) %>% 
+  rename(c("elo_home" = "elo1", "elo_away" = "elo2", "elo_prob_home_win" = "elo_prob1"))
+```
+
+Enrich meta_game_data
+```{r message = FALSE, warning=FALSE}
+meta_game_data <- meta_game_data %>% 
+  left_join(
+    weather_data, 
+    by = c("old_game_id" = "game_id")
+    ) %>%
+  group_by(across(game_id:rest_time_home_team)) %>% 
+  summarise(
+    across(
+      source:estimated_condition, 
+      ~ first(na.omit(.x))
+      )
+    ) %>% 
+  ungroup() %>% 
+  left_join(
+    new_game_data, 
+    by = c("old_game_id" = "game_id", "season" = "season")
+    ) %>% 
+  left_join(
+    stadium_data, 
+    by = c("stadium_name" = "stadium_name")
+    )
+
+```
+
+Add travel distance to meta_game_data
+```{r message = FALSE, warning=FALSE}
+team_location_data <- meta_game_data %>% 
+  group_by(home_team, season, longitude, latitude) %>% 
+  summarise(n = n()) %>% 
+  ungroup() %>% 
+  group_by(home_team, season) %>% 
+  arrange(desc(n)) %>% 
+  summarise(
+    across(
+      longitude:latitude, 
+      ~ first(na.omit(.x))
+      )
+    ) %>% 
+  ungroup() %>% 
+  rename(team = home_team)
+
+
+meta_game_data <- meta_game_data %>% 
+  left_join(
+    team_location_data, 
+    by = c("away_team" = "team", "season" = "season"), 
+    suffix = c("_home", "_away")
+    ) %>% 
+  rowwise() %>% 
+  mutate(travel_distance = distm(c(longitude_home, latitude_home), c(longitude_away, latitude_away), fun = distHaversine)) %>% 
+  ungroup()
+
+```
+
+Compute Average of last 5 games for offense (fill with means from last year)
+```{r message = FALSE, warning=FALSE}
+off_game_data <- off_game_data %>% 
+  group_by(team, season) %>% 
+  mutate(game_nr = seq(n())) %>% 
+  ungroup()
+
+
+last_season_means <- off_game_data %>% 
+  mutate(is_regular_season = as.double(season_type == "REG")) %>% 
+  group_by(team, season) %>%
+  summarise(
+    across(
+      points_scored:pass_touchdown_rate, 
+      ~ weighted.mean(.x, is_regular_season, na.rm = TRUE)
+      )
+    ) %>% 
+  ungroup() %>% 
+  mutate(season = season + 1)
+
+help_off_game_data <- tibble(
+  game_id = c("auxilary_game_1", "auxilary_game_2", "auxilary_game_3", "auxilary_game_4", "auxilary_game_5"),
+  week = c(0, -1, -2, -3, -4),
+  game_nr = c(0, -1, -2, -3, -4),
+  season_type = c("REG", "REG", "REG", "REG", "REG")
+  ) %>% 
+  full_join(
+    last_season_means, 
+    by = character()
+    ) %>% 
+  relocate(season, .before = week)
+
+lag_0 <- union_all(off_game_data, help_off_game_data) %>% mutate(lag = 0)
+lag_1 <- lag_0 %>% mutate(game_nr = game_nr + 1, lag = lag +1)
+lag_2 <- lag_1 %>% mutate(game_nr = game_nr + 1, lag = lag +1)
+lag_3 <- lag_2 %>% mutate(game_nr = game_nr + 1, lag = lag +1)
+lag_4 <- lag_3 %>% mutate(game_nr = game_nr + 1, lag = lag +1)
+lag_5 <- lag_4 %>% mutate(game_nr = game_nr + 1, lag = lag +1)
+
+avg_last_five_games <- lag_1 %>% 
+  union_all(lag_2) %>% 
+  union_all(lag_3) %>% 
+  union_all(lag_4) %>% 
+  union_all(lag_5) %>% 
+  group_by(season, game_nr, team) %>% 
+  summarise(
+    across(
+      points_scored:pass_touchdown_rate, 
+      ~ mean(.x, na.rm = T)
+      )
+    ) %>% 
+  ungroup()
+
+off_game_data <- lag_0 %>% 
+  select(game_id, season, week, season_type, team, game_nr, points_scored) %>%
+  rename(c("y" = "points_scored")) %>% 
+  left_join(
+    avg_last_five_games, 
+    by = c("season" = "season", "game_nr" = "game_nr", "team" = "team")
+    ) %>% 
+  filter(game_nr >= 1) %>% 
+  select(-game_nr)
+
+```
+
+Compute Average of last 5 games for defense (fill with means from last year)
+```{r message = FALSE, warning=FALSE}
+def_game_data <- def_game_data %>% 
+  group_by(team, season) %>% 
+  mutate(game_nr = seq(n())) %>% 
+  ungroup()
+
+last_season_means <- def_game_data %>% 
+  mutate(is_regular_season = as.double(season_type == "REG")) %>% 
+  group_by(team, season) %>%
+  summarise(
+    across(points_allowed:percentage_sacks, 
+           ~ weighted.mean(.x, is_regular_season, na.rm = TRUE)
+           )
+    ) %>% 
+  ungroup() %>% 
+  mutate(season = season + 1)
+
+help_def_game_data <- tibble(
+  game_id = c("auxilary_game_1", "auxilary_game_2", "auxilary_game_3", "auxilary_game_4", "auxilary_game_5"),
+  week = c(0, -1, -2, -3, -4),
+  game_nr = c(0, -1, -2, -3, -4),
+  season_type = c("REG", "REG", "REG", "REG", "REG")) %>% 
+  full_join(
+    last_season_means, 
+    by = character()
+    )
+
+lag_0 <- union_all(def_game_data, help_def_game_data) %>% mutate(lag = 0)
+lag_1 <- lag_0 %>% mutate(game_nr = game_nr + 1, lag = lag +1)
+lag_2 <- lag_1 %>% mutate(game_nr = game_nr + 1, lag = lag +1)
+lag_3 <- lag_2 %>% mutate(game_nr = game_nr + 1, lag = lag +1)
+lag_4 <- lag_3 %>% mutate(game_nr = game_nr + 1, lag = lag +1)
+lag_5 <- lag_4 %>% mutate(game_nr = game_nr + 1, lag = lag +1)
+
+avg_last_five_games <- lag_1 %>% 
+  union_all(lag_2) %>% 
+  union_all(lag_3) %>% 
+  union_all(lag_4) %>% 
+  union_all(lag_5) %>% 
+  group_by(season, game_nr, team) %>% 
+  summarise(
+    across(points_allowed:percentage_sacks, 
+           ~ mean(.x, na.rm = T)
+           )
+    ) %>% 
+  ungroup()
+
+def_game_data <- lag_0 %>% 
+  select(game_id, season, week, season_type, team, game_nr) %>% 
+  left_join(
+    avg_last_five_games, 
+    by = c("season" = "season", "game_nr" = "game_nr", "team" = "team")
+    ) %>% 
+  filter(game_nr >= 1) %>% 
+  select(-game_nr)
+
+```
+
+Combine offense, defense and metadata to basic_features
+```{r message = FALSE, warning=FALSE}
+basic_features <- off_game_data %>% 
+  left_join(
+    meta_game_data, 
+    by = c("game_id", "season", "week", "season_type")
+    ) %>% 
+  mutate(
+    offense_home = team == home_team,
+    defense_team = if_else(team == home_team, away_team, home_team)
+    ) %>% 
+  left_join(
+    def_game_data, 
+    by = c("game_id", "season", "week", "defense_team" = "team"), 
+    suffix = c("_offense", "_defense")
+    ) %>% 
+  filter(season >= 2004) %>% 
+  mutate(
+    travel_distance = travel_distance[1],
+    home_team_join = case_when(
+      home_team == "WAS" ~ "WSH",
+      home_team == "LV" ~ "OAK",
+      home_team == "LA" ~ "LAR",
+      TRUE ~ home_team),
+    away_team_join = case_when(
+      away_team == "WAS" ~ "WSH",
+      away_team == "LV" ~ "OAK",
+      away_team == "LA" ~ "LAR",
+      TRUE ~ away_team)
+    ) %>% 
+  left_join(
+    elo_data,
+    by = c("season", "game_date" = "date", "home_team_join" = "team1", "away_team_join" = "team2")
+  ) %>% 
+  mutate(
+    temperature = if_else(is.na(temperature), temp, temperature),
+    wind_speed = if_else(is.na(wind_speed), wind, wind_speed),
+    is_regular_season = (season_type_offense == "REG")
+  ) %>% 
+  filter(season <= 2020) %>% 
+  select(-c(wind, temp, stadium_id, game_stadium, defense_team, season_type_offense, season_type_defense, team, stadium_name,
+            time_start_game, time_end_game, roof_type, longitude_home, latitude_home, stadium_azimuth_angle, longitude_away,
+            latitude_away, defense_team, home_team_join, away_team_join, start_time, game_time, source, distance_to_station
+            ))
+```
+
+Checkpoint
+```{r message = FALSE, warning=FALSE}
+basic_features_path <- file.path("..","..","data","processed_data","basic_features.csv")
+write_csv(basic_features, basic_features_path)
+```
+
+# 3 Load and Preprocess Madden Data
+Load madden data
+```{r message = FALSE, warning=FALSE}
+madden_05_path <- file.path("..","..","data", "raw_data", "madden", "madden_nfl_05.csv")
+madden_06_path <- file.path("..","..","data", "raw_data", "madden", "madden_nfl_06.csv")
+madden_07_path <- file.path("..","..","data", "raw_data", "madden", "madden_nfl_07.csv")
+madden_08_path <- file.path("..","..","data", "raw_data", "madden", "madden_nfl_08.csv")
+madden_09_path <- file.path("..","..","data", "raw_data", "madden", "madden_nfl_09.csv")
+madden_10_path <- file.path("..","..","data", "raw_data", "madden", "madden_nfl_10.csv")
+madden_11_path <- file.path("..","..","data", "raw_data", "madden", "madden_nfl_11.csv")
+madden_12_path <- file.path("..","..","data", "raw_data", "madden", "madden_nfl_12.csv")
+madden_13_path <- file.path("..","..","data", "raw_data", "madden", "madden_nfl_13.xlsx")
+madden_14_path <- file.path("..","..","data", "raw_data", "madden", "madden_nfl_14.xlsx")
+madden_15_path <- file.path("..","..","data", "raw_data", "madden", "madden_nfl_15.xlsx")
+madden_16_path <- file.path("..","..","data", "raw_data", "madden", "madden_nfl_16.xlsx")
+madden_17_path <- file.path("..","..","data", "raw_data", "madden", "madden_nfl_17.xlsx")
+madden_18_path <- file.path("..","..","data", "raw_data", "madden", "madden_nfl_18.xlsx")
+madden_19_path <- file.path("..","..","data", "raw_data", "madden", "madden_nfl_19.xlsx")
+madden_20_path <- file.path("..","..","data", "raw_data", "madden", "madden_nfl_20.csv")
+madden_21_path <- file.path("..","..","data", "raw_data", "madden", "madden_nfl_21.csv")
+
+
+madden_05 <- read_csv(madden_05_path) %>% 
+  rename("first_name" = "FIRSTNAME", "last_name" = "LASTNAME", "position" = "Position", 
+         "number" = "JERSEYNUM", "rating" = "OVERALLRATING") %>% 
+  select(parsed_team, first_name, last_name, number, position, rating) %>% 
+  mutate(season = 2004)
+
+madden_06 <- read_csv(madden_06_path) %>% 
+  rename("first_name" = "FIRSTNAME", "last_name" = "LASTNAME", "position" = "Position", 
+         "number" = "JERSEYNUMBER", "rating" = "OVERALLRATING") %>% 
+  select(parsed_team, first_name, last_name, number, position, rating) %>% 
+  mutate(season = 2005)
+
+madden_07 <- read_csv(madden_07_path) %>% 
+  rename("first_name" = "PLYR_FIRSTNAME", "last_name" = "PLYR_LASTNAME", "position" = "Position", 
+         "number" = "PLYR_JERSEYNUM", "rating" = "PLYR_OVERALLRATING") %>% 
+  select(parsed_team, first_name, last_name, number, position, rating) %>% 
+  mutate(season = 2006)
+
+madden_08 <- read_csv(madden_08_path) %>% 
+  rename("first_name" = "First_Name", "last_name" = "Last_Name", "position" = "Position", 
+         "number" = "Jersey_#", "rating" = "Overall_Rating") %>% 
+  select(parsed_team, first_name, last_name, number, position, rating) %>% 
+  mutate(season = 2007)
+
+madden_09 <- read_csv(madden_09_path) %>% 
+  rename("first_name" = "FIRSTNAME", "last_name" = "LASTNAME", "position" = "Position", 
+         "number" = "JERSEYNUM", "rating" = "OVERALL") %>% 
+  select(parsed_team, first_name, last_name, number, position, rating) %>% 
+  mutate(season = 2008)
+
+madden_10 <- read_csv(madden_10_path) %>% 
+  rename("team" = "Team", "first_name" = "First", "last_name" = "Last", "position" = "POS", 
+         "rating" = "OVR") %>% 
+  select(team, first_name, last_name, position, rating) %>% 
+  mutate(season = 2009)
+
+madden_11 <- read_csv(madden_11_path) %>% 
+  rename("team" = "TEAM", "first_name" = "FIRST NAME", "last_name" = "LAST NAME", "position" = "POSITION", 
+         "number" = "JERSEY #", "rating" = "OVERALL RATING") %>% 
+  select(team, first_name, last_name, number, position, rating) %>% 
+  mutate(season = 2010)
+
+madden_12 <- read_csv(madden_12_path) %>% 
+  filter(Name != "Name") %>% 
+  filter(!is.na(Name)) %>% 
+  extract(Name, c("first_name", "last_name"), "([^ ]+) (.*)") %>% 
+  rename("position" = "Position", "rating" = "Overall") %>% 
+  select(parsed_team, first_name, last_name, position, rating) %>% 
+  mutate(
+    season = 2011,
+    rating = as.double(rating)
+  )
+
+madden_13 <- read_excel(madden_13_path) %>% 
+  rename("team" = "Team", "first_name" = "First Name", "last_name" = "Last Name", "position" = "Position", 
+         "rating" = "Overall") %>% 
+  select(team, first_name, last_name, position, rating) %>% 
+  mutate(season = 2012)
+madden_14 <- read_excel(madden_14_path) %>% 
+  rename("team" = "Team", "first_name" = "First Name", "last_name" = "Last Name", "position" = "Position", 
+         "number" = "Jersey", "rating" = "Overall") %>% 
+  select(team, first_name, last_name, number, position, rating) %>% 
+  mutate(season = 2013)
+
+madden_15 <- read_excel(madden_15_path) %>% 
+  rename("team" = "Team", "first_name" = "First Name", "last_name" = "Last Name", "position" = "Position", 
+         "number" = "Jersey", "rating" = "Overall") %>% 
+  select(team, first_name, last_name, number, position, rating) %>% 
+  mutate(
+    season = 2014,
+    rating = as.double(rating)
+  )
+
+madden_16 <- read_excel(madden_16_path) %>% 
+  rename("team" = "Team", "first_name" = "First Name", "last_name" = "Last Name", "position" = "Position", "number" = "Jersey Number", "rating" = "OVR") %>% 
+  select(team, first_name, last_name, number, position, rating) %>% 
+  mutate(
+    season = 2015,
+    rating = as.double(rating),
+    number = as.double(number)
+  )
+
+madden_17 <- read_excel(madden_17_path) %>% 
+  rename("team" = "Team", "first_name" = "First Name", "last_name" = "Last Name", "position" = "Position", 
+         "rating" = "Overall") %>% 
+  select(team, first_name, last_name, position, rating) %>% 
+  mutate(
+    season = 2016,
+    rating = as.double(rating)
+  )
+
+madden_18 <- read_excel(madden_18_path) %>% 
+  rename("team" = "Team", "first_name" = "First Name", "last_name" = "Last Name", "position" = "Position", 
+         "number" = "Jersey Number", "rating" = "Overall") %>% 
+  select(team, first_name, last_name, number, position, rating) %>% 
+  mutate(
+    season = 2017,
+    rating = as.double(rating)
+  )
+
+madden_19 <- read_excel(madden_19_path) %>% 
+  extract(Name, c("first_name", "last_name"), "([^ ]+) (.*)") %>% 
+  rename("team" = "Team", "position" = "Position", 
+         "number" = "Jersey #", "rating" = "Overall") %>% 
+  select(team, first_name, last_name, number, position, rating) %>% 
+  mutate(
+    season = 2018,
+    rating = as.double(rating)
+  )
+
+madden_20 <- read_csv(madden_20_path) %>% 
+  filter(is.na(`AFC Pro Bowl Team`)) %>% 
+  extract(Name, c("first_name", "last_name"), "([^ ]+) (.*)") %>% 
+  rename("team" = "Team", "position" = "Position", 
+         "number" = "Jersey", "rating" = "Overall") %>% 
+  select(team, first_name, last_name, number, position, rating) %>% 
+  mutate(
+    season = 2019,
+    rating = as.double(rating)
+  )
+
+madden_21 <- read_csv(madden_21_path) %>% 
+  filter(is.na(`AFC Pro Bowl Team`)) %>% 
+  extract(`Full Name`, c("first_name", "last_name"), "([^ ]+) (.*)") %>% 
+  rename("team" = "Team", "position" = "Position", 
+         "number" = "Jersey Number", "rating" = "Overall Rating") %>% 
+  select(team, first_name, last_name, number, position, rating) %>% 
+  mutate(
+    season = 2020,
+    rating = as.double(rating)
+  )
+```
+Load with more features
+```{r}
+madden_05_path <- file.path("..","..","data", "raw_data", "madden", "madden_nfl_05.csv")
+madden_06_path <- file.path("..","..","data", "raw_data", "madden", "madden_nfl_06.csv")
+madden_07_path <- file.path("..","..","data", "raw_data", "madden", "madden_nfl_07.csv")
+madden_08_path <- file.path("..","..","data", "raw_data", "madden", "madden_nfl_08.csv")
+madden_09_path <- file.path("..","..","data", "raw_data", "madden", "madden_nfl_09.csv")
+madden_10_path <- file.path("..","..","data", "raw_data", "madden", "madden_nfl_10.csv")
+madden_11_path <- file.path("..","..","data", "raw_data", "madden", "madden_nfl_11.csv")
+madden_12_path <- file.path("..","..","data", "raw_data", "madden", "madden_nfl_12.csv")
+madden_13_path <- file.path("..","..","data", "raw_data", "madden", "madden_nfl_13.xlsx")
+madden_14_path <- file.path("..","..","data", "raw_data", "madden", "madden_nfl_14.xlsx")
+madden_15_path <- file.path("..","..","data", "raw_data", "madden", "madden_nfl_15.xlsx")
+madden_16_path <- file.path("..","..","data", "raw_data", "madden", "madden_nfl_16.xlsx")
+madden_17_path <- file.path("..","..","data", "raw_data", "madden", "madden_nfl_17.xlsx")
+madden_18_path <- file.path("..","..","data", "raw_data", "madden", "madden_nfl_18.xlsx")
+madden_19_path <- file.path("..","..","data", "raw_data", "madden", "madden_nfl_19.xlsx")
+madden_20_path <- file.path("..","..","data", "raw_data", "madden", "madden_nfl_20.csv")
+madden_21_path <- file.path("..","..","data", "raw_data", "madden", "madden_nfl_21.csv")
+
+madden_05 <- read_csv(madden_05_path) %>% 
+  rename("first_name" = "FIRSTNAME", "last_name" = "LASTNAME", "position" = "Position", 
+         "number" = "JERSEYNUM", "rating" = "OVERALLRATING") %>% 
+  clean_names() %>% 
+  rename("throw_power" = "throwpower", "throw_accuracy" = "throwaccuracy", "run_block" = "runblock", "pass_block" = "passblock") %>% 
+  select(parsed_team, first_name, last_name, number, position, rating, speed, acceleration, agility, jumping, strength, awareness, catching, throw_power, throw_accuracy, run_block, pass_block, tackle, awareness) %>% 
+  mutate(season = 2004)
+
+madden_06 <- read_csv(madden_06_path) %>% 
+  rename("first_name" = "FIRSTNAME", "last_name" = "LASTNAME", "position" = "Position", 
+         "number" = "JERSEYNUMBER", "rating" = "OVERALLRATING") %>% 
+  clean_names() %>% 
+  rename("throw_power" = "throwpower", "throw_accuracy" = "throwaccuracy", "run_block" = "runblock", "pass_block" = "passblock") %>% 
+  select(parsed_team, first_name, last_name, number, position, rating, speed, acceleration, agility, jumping, strength, awareness, catching, throw_power, throw_accuracy, run_block, pass_block, tackle, awareness) %>% 
+  mutate(season = 2005)
+
+madden_07 <- read_csv(madden_07_path) %>% 
+  rename("first_name" = "PLYR_FIRSTNAME", "last_name" = "PLYR_LASTNAME", "position" = "Position", 
+         "number" = "PLYR_JERSEYNUM", "rating" = "PLYR_OVERALLRATING") %>% 
+  clean_names() %>%  
+  rename_all(~ sub("plyr_", "", .x)) %>% 
+  rename("throw_power" = "throwpower", "throw_accuracy" = "throwaccuracy", "run_block" = "runblock", "pass_block" = "passblock") %>% 
+  select(parsed_team, first_name, last_name, number, position, rating, speed, acceleration, agility, jumping, strength, awareness, catching, throw_power, throw_accuracy, run_block, pass_block, tackle, awareness) %>% 
+  mutate(season = 2006)
+
+madden_08 <- read_csv(madden_08_path) %>% 
+  rename("first_name" = "First_Name", "last_name" = "Last_Name", "position" = "Position", 
+         "number" = "Jersey_#", "rating" = "Overall_Rating") %>% 
+  clean_names() %>%  
+  select(parsed_team, first_name, last_name, number, position, rating, speed, acceleration, agility, jumping, strength, awareness, catching, throw_power, throw_accuracy, run_block, pass_block, tackle, awareness) %>% 
+  mutate(season = 2007)
+
+madden_09 <- read_csv(madden_09_path) %>% 
+  rename("first_name" = "FIRSTNAME", "last_name" = "LASTNAME", "position" = "Position", 
+         "number" = "JERSEYNUM", "rating" = "OVERALL") %>% 
+  clean_names() %>% 
+  rename("throw_power" = "throwpower", "throw_accuracy" = "throwaccuracy", "run_block" = "runblock", "pass_block" = "passblock") %>% 
+  select(parsed_team, first_name, last_name, number, position, rating, speed, acceleration, agility, jumping, strength, awareness, catching, throw_power, throw_accuracy, run_block, pass_block, tackle, awareness) %>%
+  mutate(season = 2008)
+
+madden_10 <- read_csv(madden_10_path) %>% 
+  rename("team" = "Team", "first_name" = "First", "last_name" = "Last", "position" = "POS", 
+         "rating" = "OVR") %>% 
+  clean_names() %>% 
+  select(team, first_name, last_name, position, rating, speed, acceleration) %>%
+  mutate(season = 2009)
+
+madden_11 <- read_csv(madden_11_path) %>% 
+  rename("team" = "TEAM", "first_name" = "FIRST NAME", "last_name" = "LAST NAME", "position" = "POSITION", 
+         "number" = "JERSEY #", "rating" = "OVERALL RATING") %>% 
+  clean_names() %>% 
+  rename("run_block" = "runblock", "pass_block" = "passblock", "acceleration" = "accleration") %>% 
+  select(team, first_name, last_name, number, position, rating, speed, acceleration, agility, jumping, strength, awareness, catching, throw_power, throw_accuracy, run_block, pass_block, tackle, awareness) %>%
+  mutate(season = 2010)
+
+madden_12 <- read_csv(madden_12_path) %>% 
+  filter(Name != "Name") %>% 
+  filter(!is.na(Name)) %>% 
+  extract(Name, c("first_name", "last_name"), "([^ ]+) (.*)") %>% 
+  rename("position" = "Position", "rating" = "Overall") %>% 
+  clean_names() %>% 
+  type_convert() %>% 
+  select(parsed_team, first_name, last_name, position, rating, speed, acceleration, agility, jumping, strength, awareness, catching, throw_power, throw_accuracy, awareness) %>%
+  mutate(
+    season = 2011,
+    rating = as.double(rating)
+  )
+
+madden_13 <- read_excel(madden_13_path) %>% 
+  rename("team" = "Team", "first_name" = "First Name", "last_name" = "Last Name", "position" = "Position", 
+         "rating" = "Overall") %>% 
+  clean_names() %>% 
+  select(team, first_name, last_name, position, rating, speed, acceleration, agility, jumping, strength, awareness, catching, throw_power, throw_accuracy, run_block, pass_block, tackle, awareness) %>%
+  mutate(season = 2012)
+
+madden_14 <- read_excel(madden_14_path) %>% 
+  rename("team" = "Team", "first_name" = "First Name", "last_name" = "Last Name", "position" = "Position", 
+         "number" = "Jersey", "rating" = "Overall") %>% 
+  clean_names() %>% 
+  select(team, first_name, last_name, number, position, rating, speed, agility, jumping, awareness, catching, throw_power, throw_accuracy, run_block, pass_block, tackle, awareness) %>%
+  mutate(season = 2013)
+
+madden_15 <- read_excel(madden_15_path) %>% 
+  rename("team" = "Team", "first_name" = "First Name", "last_name" = "Last Name", "position" = "Position", 
+         "number" = "Jersey", "rating" = "Overall") %>% 
+  clean_names() %>% 
+  type_convert() %>% 
+  mutate(throw_accuracy = (throw_accuracy_short + throw_accuracy_medium + throw_accuracy_deep) / 3 ) %>% 
+  select(team, first_name, last_name, number, position, rating, speed, acceleration, agility, jumping, strength, awareness, catching, throw_power, throw_accuracy, run_block, pass_block, tackle, awareness) %>%
+  mutate(season = 2014,)
+
+madden_16 <- read_excel(madden_16_path) %>% 
+  rename("team" = "Team", "first_name" = "First Name", "last_name" = "Last Name", "position" = "Position", "number" = "Jersey Number", "rating" = "OVR") %>% 
+  clean_names() %>% 
+  type_convert() %>% 
+  mutate(throw_accuracy = (throw_accuracy_short + throw_accuracy_mid + throw_accuracy_deep) / 3) %>% 
+  select(team, first_name, last_name, number, position, rating, speed, acceleration, agility, jumping, strength, awareness, catching, throw_power, throw_accuracy, run_block, pass_block, tackle, awareness) %>%
+  mutate(season = 2015)
+
+madden_17 <- read_excel(madden_17_path) %>% 
+  rename("team" = "Team", "first_name" = "First Name", "last_name" = "Last Name", "position" = "Position", 
+         "rating" = "Overall") %>% 
+  clean_names() %>% 
+  type_convert() %>% 
+  rename("run_block" = "run_blocking", "pass_block" = "pass_blocking") %>% 
+  select(team, first_name, last_name, position, rating, speed, acceleration, agility, jumping, strength, awareness, catching, throw_power, throw_accuracy, run_block, pass_block, tackle, awareness) %>%
+  mutate(season = 2016)
+
+madden_18 <- read_excel(madden_18_path) %>% 
+  rename("team" = "Team", "first_name" = "First Name", "last_name" = "Last Name", "position" = "Position", 
+         "number" = "Jersey Number", "rating" = "Overall") %>% 
+  clean_names() %>% 
+  type_convert() %>% 
+  select(team, first_name, last_name, number, position, rating, speed, acceleration, agility, jumping, strength, awareness, catching, throw_power, throw_accuracy, run_block, pass_block, tackle, awareness) %>%
+  mutate(season = 2017)
+
+madden_19 <- read_excel(madden_19_path) %>% 
+  extract(Name, c("first_name", "last_name"), "([^ ]+) (.*)") %>% 
+  rename("team" = "Team", "position" = "Position", 
+         "number" = "Jersey #", "rating" = "Overall") %>% 
+  clean_names() %>% 
+  type_convert() %>% 
+  rename("catching" = "catch") %>% 
+  mutate(throw_accuracy = (throw_accuracy_short + throw_accuracy_mid + throw_accuracy_deep) / 3) %>% 
+  select(team, first_name, last_name, number, position, rating, speed, acceleration, agility, jumping, strength, awareness, catching, throw_power, throw_accuracy, run_block, pass_block, tackle, awareness) %>%
+  mutate(season = 2018)
+
+madden_20 <- read_csv(madden_20_path) %>% 
+  filter(is.na(`AFC Pro Bowl Team`)) %>% 
+  extract(Name, c("first_name", "last_name"), "([^ ]+) (.*)") %>% 
+  rename("team" = "Team", "position" = "Position", 
+         "number" = "Jersey", "rating" = "Overall") %>% 
+  clean_names() %>% 
+  type_convert() %>% 
+  mutate(throw_accuracy = (short_throw_accuracy + medium_throw_accuracy + deep_throw_accruacy) / 3) %>% 
+  select(team, first_name, last_name, number, position, rating, speed, acceleration, agility, jumping, strength, awareness, catching, throw_power, throw_accuracy, run_block, pass_block, tackle, awareness) %>%
+  mutate(season = 2019)
+
+madden_21 <- read_csv(madden_21_path) %>% 
+  filter(is.na(`AFC Pro Bowl Team`)) %>% 
+  extract(`Full Name`, c("first_name", "last_name"), "([^ ]+) (.*)") %>% 
+  rename("team" = "Team", "position" = "Position", 
+         "number" = "Jersey Number", "rating" = "Overall Rating") %>% 
+  clean_names() %>% 
+  type_convert() %>% 
+  rename("pass_block" = "pass_blocking", "run_block" = "run_blocking") %>% 
+  mutate(throw_accuracy = (throw_accuracy_short + throw_accuracy_mid + throw_accuracy_deep) / 3) %>% 
+  select(team, first_name, last_name, number, position, rating, speed, acceleration, agility, jumping, strength, awareness, catching, throw_power, throw_accuracy, run_block, pass_block, tackle, awareness) %>%
+  mutate(season = 2020)
+```
+
+Join madden data
+```{r message = FALSE, warning=FALSE}
+teams <- load_teams() %>% 
+  union_all(tibble(team_abbr = c("FRA"), team_name = c("Free Agents")))
+
+madden <- madden_05 %>% 
+  union_all(madden_06) %>% 
+  union_all(madden_07) %>% 
+  union_all(madden_08) %>% 
+  union_all(madden_09) %>% 
+  union_all(madden_10) %>% 
+  union_all(madden_11) %>% 
+  union_all(madden_12) %>% 
+  union_all(madden_13) %>%
+  union_all(madden_14) %>%
+  union_all(madden_15) %>% 
+  union_all(madden_16) %>% 
+  union_all(madden_17) %>% 
+  union_all(madden_18) %>% 
+  union_all(madden_19) %>% 
+  union_all(madden_20) %>% 
+  union_all(madden_21) %>% 
+  mutate(
+    parsed_team = str_extract(parsed_team, "[/\\\\][a-z_\\.0-9]*_\\(?madden"),
+    parsed_team = str_replace(parsed_team, "[/\\\\]", ""),
+    parsed_team = str_replace(parsed_team, "_\\(?madden", ""),
+    parsed_team = str_replace_all(parsed_team, "_+", " "),
+    parsed_team = str_to_title(parsed_team), 
+    team = if_else(is.na(team), parsed_team, team),
+    team = str_trim(team), 
+    team = if_else(team == "Washington Redskins" | team == "Redskins", "Washington Commanders", team),
+    team = if_else(team == "Jacksonville Jagaurs", "Jacksonville Jaguars", team),
+    team = if_else(team == "Bucs", "Buccaneers", team)
+  ) %>% 
+  full_join(
+    teams, 
+    by = character()
+  ) %>% 
+  filter((team == team_name) | str_detect(team_name, team)) %>% 
+  filter(! (((team == "Raiders") & (season < 2020))& (team_name == "Las Vegas Raiders"))) %>% 
+  filter(! (((team == "Raiders") & (season >= 2020))& (team_name == "Oakland Raiders"))) %>% 
+  filter(! (((team == "Rams") & (season < 2016))& (team_name == "Los Angeles Rams"))) %>%
+  filter(! (((team == "Rams") & (season >= 2016))& (team_name == "St. Louis Rams"))) %>%
+  filter(! (((team == "Chargers") & (season < 2017))& (team_name == "Los Angeles Chargers"))) %>%
+  filter(! (((team == "Chargers") & (season >= 2017))& (team_name == "San Diego Chargers"))) %>%
+  rename(c("jersey_number" = "number")) %>% 
+  select(season, team_name, team_abbr, team_id, jersey_number, first_name, last_name, position, rating, speed, acceleration, agility, jumping, strength, awareness, catching, throw_power, throw_accuracy, run_block, pass_block, tackle, awareness)
+
+```
+
+Checkpoint
+```{r message = FALSE, warning=FALSE}
+madden_data_path <- file.path("..","..","data", "processed_data", "madden_overall_rating.csv")
+
+write_csv(madden, madden_data_path)
+```
+
+# 4. Enrich Madden Data with Depth Charts
+Load data CHANGED
+```{r message = FALSE, warning=FALSE}
+madden_data_path <- file.path("..","..","data", "processed_data", "madden_overall_rating.csv")
+madden <- read_csv(madden_data_path) %>% filter(!position %in% c("DL", "LB", "OL", "S"))
+
+depth_charts <- load_depth_charts(2004:2020)
+```
+
+Prepare depth charts
+```{r message = FALSE, warning=FALSE}
+helper_df <- depth_charts %>% 
+  mutate(
+    jersey_number = as.double(jersey_number),
+    club_code
+  ) %>% 
+  rename(c("first_name_l" = "first_name", "last_name_l" = "last_name", "jersey_number_l" = "jersey_number", "position_l" = "position")) %>% 
+  left_join(
+    madden,
+    by = c("season", "club_code" = "team_abbr", "first_name_l" = "first_name", "last_name_l" = "last_name", 
+           "jersey_number_l" = "jersey_number", "position_l" = "position")
+  )
+
+madden_enriched <- helper_df %>% filter(!is.na(team_name))
+```
+
+Join madden with depth charts
+```{r message = FALSE, warning=FALSE}
+to_go <- helper_df %>% filter(is.na(team_name)) %>% select(season:full_name)
+
+#------------------------------------------------------------------------------------------------
+
+helper_df <- to_go %>% 
+  left_join(
+    madden,
+    by = c("season", "club_code" = "team_abbr", "last_name_l" = "last_name", 
+           "jersey_number_l" = "jersey_number", "position_l" = "position")
+  )
+madden_enriched <- helper_df %>% filter(!is.na(team_name)) %>% union_all(madden_enriched)
+to_go <- helper_df %>% filter(is.na(team_name)) %>% select(season:full_name)
+
+#------------------------------------------------------------------------------------------------
+
+helper_df <- to_go %>% 
+  left_join(
+    madden,
+    by = c("season", "club_code" = "team_abbr", "last_name_l" = "last_name", 
+           "jersey_number_l" = "jersey_number", "depth_position" = "position")
+  )
+madden_enriched <- helper_df %>% filter(!is.na(team_name)) %>% union_all(madden_enriched)
+to_go <- helper_df %>% filter(is.na(team_name)) %>% select(season:full_name)
+
+#------------------------------------------------------------------------------------------------
+
+helper_df <- to_go %>% 
+  left_join(
+    madden,
+    by = c("season", "club_code" = "team_abbr", "last_name_l" = "last_name", 
+           "jersey_number_l" = "jersey_number")
+  )
+madden_enriched <- helper_df %>% filter(!is.na(team_name)) %>% union_all(madden_enriched)
+to_go <- helper_df %>% filter(is.na(team_name)) %>% select(season:full_name)
+
+#------------------------------------------------------------------------------------------------
+
+helper_df <- to_go %>% 
+  left_join(
+    madden,
+    by = c("season", "club_code" = "team_abbr", "first_name_l" = "first_name", "last_name_l" = "last_name")
+  )
+madden_enriched <- helper_df %>% filter(!is.na(team_name)) %>% union_all(madden_enriched)
+to_go <- helper_df %>% filter(is.na(team_name)) %>% select(season:full_name)
+
+#------------------------------------------------------------------------------------------------
+
+helper_df <- to_go %>% 
+  left_join(
+    madden,
+    by = c("season", "club_code" = "team_abbr", "position_l" = "position", "last_name_l" = "last_name")
+  )
+madden_enriched <- helper_df %>% filter(!is.na(team_name)) %>% union_all(madden_enriched)
+to_go <- helper_df %>% filter(is.na(team_name)) %>% select(season:full_name)
+
+#------------------------------------------------------------------------------------------------
+
+helper_df <- to_go %>% 
+  left_join(
+    madden,
+    by = c("season", "club_code" = "team_abbr", "depth_position" = "position", "last_name_l" = "last_name")
+  )
+madden_enriched <- helper_df %>% filter(!is.na(team_name)) %>% union_all(madden_enriched)
+to_go <- helper_df %>% filter(is.na(team_name)) %>% select(season:full_name)
+
+#------------------------------------------------------------------------------------------------
+
+helper_df <- to_go %>% 
+  left_join(
+    madden,
+    by = c("season", "first_name_l" = "first_name", "last_name_l" = "last_name", 
+           "position_l" = "position")
+  )
+madden_enriched <- helper_df %>% filter(!is.na(team_name)) %>% union_all(madden_enriched)
+to_go <- helper_df %>% filter(is.na(team_name)) %>% select(season:full_name)
+
+#-----------------------------------------------------------------------------------------------
+
+helper_df <- to_go %>% 
+  left_join(
+    madden,
+    by = c("season", "first_name_l" = "first_name", "last_name_l" = "last_name", 
+           "depth_position" = "position")
+  )
+madden_enriched <- helper_df %>% filter(!is.na(team_name)) %>% union_all(madden_enriched)
+to_go <- helper_df %>% filter(is.na(team_name)) %>% select(season:full_name)
+
+#------------------------------------------------------------------------------------------------
+
+helper_df <- to_go %>% 
+  left_join(
+    madden,
+    by = c("season", "club_code" = "team_abbr", "first_name_l" = "first_name",  "position_l" = "position")
+  )
+
+madden_enriched <- helper_df %>% filter(!is.na(team_name)) %>% union_all(madden_enriched)
+to_go <- helper_df %>% 
+  filter(is.na(team_name)) %>% 
+  select(season:full_name)%>% 
+  mutate(broad_position = case_when(
+    position_l %in% c("OLB", "ILB", "MLB", "LB") ~ "LB",
+    position_l %in% c("CB", "DB", "SS", "S") ~ "DB",
+    position_l %in% c("DE", "DT", "NT", "LB") ~ "DLine",
+    position_l %in% c("LS", "C") ~ "C",
+    position_l %in% c("T", "G") ~ "OLine",
+    position_l %in% c("FB", "RB") ~ "RB",
+    position_l %in% c("OLB", "ILB", "MLB", "LB") ~ "LB",
+    TRUE ~ position_l
+  ))
+
+madden_with_broad_positions <- madden %>% 
+  mutate(
+    broad_position = case_when(
+      position %in% c("OLB", "ILB", "MLB", "LB") ~ "LB",
+      position %in% c("CB", "DB", "SS", "S") ~ "DB",
+      position %in% c("DE", "DT", "NT", "LB") ~ "DLine",
+      position %in% c("LS", "C") ~ "C",
+      position %in% c("T", "G") ~ "OLine",
+      position %in% c("FB", "RB") ~ "RB",
+      position %in% c("OLB", "ILB", "MLB", "LB") ~ "LB",
+      TRUE ~ position
+    )
+  )
+
+helper_df <- to_go %>% 
+  left_join(
+    madden_with_broad_positions,
+    by = c("season", "club_code" = "team_abbr", "last_name_l" = "last_name", 
+           "broad_position")
+  )
+madden_enriched <- helper_df %>% filter(!is.na(team_name)) %>%  select(-broad_position) %>% union_all(madden_enriched)
+
+```
+
+Final processing
+```{r message = FALSE, warning=FALSE}
+madden_enriched <- helper_df %>% 
+  filter(!is.na(team_name)) %>% 
+  union_all(madden_enriched) %>% 
+  select(season, club_code, team_id, week, first_name_l, last_name_l, jersey_number_l, formation, position_l, depth_position, depth_team, rating, speed:tackle) %>% 
+  rename(c("last_name" = "last_name_l", "first_name" = "first_name_l", "jersey_number" = "jersey_number_l", "position" = "position_l"))
+
+```
+
+Checkpoint
+```{r message = FALSE, warning=FALSE}
+madden_enriched_path <- file.path("..","..","data", "processed_data", "madden_with_depth_team.csv")
+write_csv(madden_enriched, madden_enriched_path)
+```
+
+# 5. Join Features with Madden
+Load data
+```{r message = FALSE, warning=FALSE}
+madden_enriched_path <- file.path("..", "..", "data", "processed_data", "madden_with_depth_team.csv")
+madden_enriched <- read_csv(madden_enriched_path)
+
+basic_features_path <- file.path("..", "..", "data","processed_data","basic_features.csv")
+features <- read_csv(basic_features_path)
+
+snap_count <- load_snap_counts(2012:2020)
+```
+
+Get snap percentages for depth positions
+```{r message = FALSE, warning=FALSE}
+helper <- load_depth_charts(2012:2020) %>% 
+  mutate(player = paste(first_name, last_name, sep = " ")) %>% 
+  inner_join(
+    snap_count,
+    by = c("season", "week", "player", "club_code" = "team", "position")
+  ) %>% 
+  filter(formation == "Offense" & position == "K") %>% 
+  group_by(depth_team) %>% 
+  summarise(
+    median = median(offense_pct)
+  ) %>% 
+  mutate(formation = "Offense")
+
+depth_team_snap_pct <- load_depth_charts(2012:2020) %>% 
+  mutate(player = paste(first_name, last_name, sep = " ")) %>% 
+  inner_join(
+    snap_count,
+    by = c("season", "week", "player", "club_code" = "team", "position")
+  ) %>% 
+  filter(formation == "Defense") %>% 
+  group_by(depth_team) %>% 
+  summarise(
+    median = median(defense_pct)
+  ) %>% 
+  mutate(formation = "Defense") %>% 
+  union_all(helper) %>% 
+  mutate(
+    depth_team = as.double(depth_team),
+    formation)
+```
+
+Compute position ranking
+```{r message = FALSE, warning=FALSE}
+features <- features %>% 
+  mutate(
+    offense_team = if_else(offense_home, home_team, away_team),
+    defense_team = if_else(offense_home, away_team, home_team)
+  )
+
+position_rating <- madden_enriched %>% 
+  mutate(
+    formation = if_else(position == "K", "Offense", formation),
+    position_group = case_when(
+      position %in% c("OLB", "ILB", "MLB", "LB") ~ "line_backer",
+      position %in% c("CB", "DB", "SS", "S", "FS") ~ "def_backs",
+      position %in% c("DE", "DT", "NT") ~ "def_line",
+      position %in% c("C", "G", "T") ~ "off_line",
+      position %in% c("TE", "WR") ~ "pass_receiver",
+      position %in% c("FB", "RB", "HB") ~ "run_backs",
+      position %in% c("QB") ~ "quarterback",
+      position %in% c("K") ~ "kicker",
+      TRUE ~ "special_teams"
+    )
+  ) %>% 
+  left_join(
+    depth_team_snap_pct,
+    by = c("formation", "depth_team")
+  ) %>%  
+  group_by(season, formation, club_code, week, position_group, depth_team) %>% 
+  summarise(
+    across(rating:tackle, ~ mean(.x, na.rm = TRUE), .names = "{.col}"),
+    snap_pct = first(median)
+  ) %>% 
+  ungroup() %>% 
+  group_by(season, formation, club_code, week, position_group) %>%
+  summarise(
+    across(rating:tackle, ~ first(.x), .names = "{.col}")
+  ) %>%
+  ungroup() %>% 
+  arrange(season, formation, club_code, week, position_group)
+
+offense_position_rating <- position_rating %>% 
+  filter(formation == "Offense") %>% 
+  pivot_wider(id_cols = season:week, names_from = position_group, values_from = rating:pass_block, names_sep = "_") %>% 
+  ungroup() %>% 
+  select(where(~mean(is.na(.)) < 0.3)) %>% 
+  select(-formation)
+
+offense_position_rating <- offense_position_rating %>% 
+  filter(club_code %in% c("STL", "SD", "OAK")) %>% 
+  mutate(club_code = case_when(
+    club_code == "STL" ~ "LA",
+    club_code == "SD" ~ "LAC",
+    club_code == "OAK" ~ "LV"
+  )) %>% 
+  union_all(offense_position_rating)
+
+defense_position_rating <- position_rating %>% 
+  filter(formation == "Defense") %>% 
+  pivot_wider(id_cols = season:week, names_from = position_group, values_from = rating:pass_block, names_sep = "_") %>% 
+  ungroup() %>% 
+  select(where(~mean(is.na(.)) < 0.3)) %>% 
+  select(-formation)
+
+
+defense_position_rating <- defense_position_rating %>% 
+  filter(club_code %in% c("STL", "SD", "OAK")) %>% 
+  mutate(club_code = case_when(
+    club_code == "STL" ~ "LA",
+    club_code == "SD" ~ "LAC",
+    club_code == "OAK" ~ "LV"
+  )) %>% 
+  union_all(defense_position_rating)
+```
+
+Join everything together
+```{r message = FALSE, warning=FALSE}
+enriched_features <- features %>% 
+  left_join(
+    offense_position_rating,
+    by = c("offense_team" = "club_code", "season", "week")
+  ) %>% 
+  left_join(
+    defense_position_rating,
+    by = c("defense_team" = "club_code", "season", "week")
+  ) %>% 
+  clean_names() %>% 
+  mutate(
+    elo_offense_team = if_else(offense_home, elo_home, elo_away),
+    elo_defense_team = if_else(offense_home, elo_away, elo_home),
+    elo_prob_offense_win = if_else(offense_home, elo_prob_home_win, 1 - elo_prob_home_win),
+    temperature = (temperature - 32) * 5 /9,
+    is_hot = as.integer(temperature >= 30),
+    is_cold = as.integer(temperature <= -5),
+    stadium_closed = roof %in% c("dome", "closed"),
+    is_windy = if_else(stadium_closed, 0, as.double(wind_speed > 15)),
+    is_rainy = if_else(stadium_closed, 0, if_else(str_detect(estimated_condition, "Rain"), 1, 0)),
+    is_snowing = if_else(stadium_closed, 0, if_else(str_detect(estimated_condition, "Snow"), 1, 0)),
+    is_bad_condition = if_else(is_rainy + is_snowing + is_windy + is_cold >= 1, 1, 0),
+    rest_time_difference = if_else(offense_home, rest_time_home_team - rest_time_away_team, rest_time_away_team - rest_time_home_team)
+  )
+
+offset_data <- enriched_features %>% 
+  select(season, home_team, tz_offset) %>% 
+  group_by(season, home_team) %>% 
+  summarise(tz_offset = last(tz_offset)) %>% 
+  ungroup()
+
+enriched_features <- enriched_features %>% 
+  left_join(
+  offset_data,
+  by = c("season", "away_team" = "home_team"), 
+  suffix = c("_home", "_away")
+  ) %>% 
+  mutate(
+    tz_diff_offense = if_else(offense_home, 0, abs(tz_offset_home - tz_offset_away)),
+    tz_diff_defense = if_else(offense_home, abs(tz_offset_home - tz_offset_away), 0)
+  ) %>% 
+  mutate(dual_threat_score = (speed_quarterback + acceleration_quarterback + agility_quarterback) / 3) %>% 
+  group_by(season) %>% 
+  mutate(dual_threat_qb = dual_threat_score >= quantile(dual_threat_score, 0.75, na.rm = TRUE)) %>% 
+  ungroup() %>% 
+  select(game_id, season, y , points_scored, n_interception_offense, n_qb_hit_offense, n_sacks_offense, n_fumbles, field_goal_success_rate, offense_team, defense_team, offense_home, monday_game, thursday_game, is_regular_season, rest_time_difference,third_down_conversion_rate, percentage_pass_attemps, div_game, points_allowed, third_down_success_rate,percentage_incomplete_passes_forced, n_interception_defense, n_fumble_forced, n_qb_hit_defense, n_sacks_defense, elo_prob_offense_win, is_hot, is_cold, is_bad_condition, is_windy, is_rainy, is_snowing, tz_diff_offense, tz_diff_defense, dual_threat_qb, rating_kicker:pass_block_line_backer) %>% 
+  select(game_id:dual_threat_qb, starts_with("rating")) %>% 
+  mutate(
+     na_score = is.na(rating_off_line) + is.na(rating_pass_receiver) + is.na(rating_run_backs) + is.na(rating_quarterback) + is.na(rating_def_line) + is.na(rating_kicker) + is.na(rating_def_backs) + is.na(rating_line_backer)
+  ) %>% 
+  filter(na_score <= 3) %>% 
+  pivot_longer(cols = starts_with("rating"), names_to = "position_group", values_to = "rating") %>% 
+  group_by(season, position_group) %>% 
+  mutate(
+    quantile_group = case_when(
+      rating >= quantile(rating, 0.75, na.rm = TRUE) ~ 4,
+      rating >= quantile(rating, 0.5, na.rm = TRUE) ~ 3,
+      rating >= quantile(rating, 0.25, na.rm = TRUE) ~ 2,
+      TRUE ~ 1
+    )
+  ) %>% 
+  pivot_wider(id_cols = game_id:dual_threat_qb, names_from = "position_group", values_from = "quantile_group") %>% 
+  ungroup() %>% 
+  mutate(dual_threat_qb = if_else(is.na(dual_threat_qb), 0, as.double(dual_threat_qb))) %>% 
+  mutate(
+    across(rating_kicker:rating_line_backer, ~ replace_na(.x, 2.5))
+    )
+```
+```{r}
+skim(enriched_features)
+```
+
+Checkpoint
+```{r message = FALSE, warning=FALSE}
+madden_enriched_path <- file.path("..", "..", "data", "processed_data", "features_with_madden.csv")
+write_csv(enriched_features, madden_enriched_path)
+```
+
+# 6. Model
+Load Data
+```{r}
+madden_enriched_path <- file.path("..", "..","data", "processed_data", "features_with_madden.csv")
+df <- read_csv(madden_enriched_path, show_col_types = FALSE)
+
+df <- df %>% 
+  mutate(
+    home_division = as.double(offense_home + div_game == 2),
+    home_no_division = as.double(offense_home & div_game == 0),
+    line_matchup = rating_off_line - rating_def_line, 
+    pass_matchup = rating_pass_receiver - rating_def_backs,
+  )
+```
+
+Split the data
+```{r message = FALSE, warning = FALSE}
+df_split <-  initial_time_split(df, prop = 0.9)
+train_df <- training(df_split)
+test_df <- testing(df_split)
+```
+
+
+```{r}
+basic_model <- 
+  linear_reg() %>% 
+  set_engine("lm") %>% 
+  fit(y ~ points_scored + points_allowed + home_division + home_no_division + is_windy + is_rainy + line_matchup + pass_matchup + rating_quarterback + rating_run_backs + rating_kicker + rating_line_backer, data = train_df)
+tidy(basic_model) %>% 
+  dwplot(dot_args = list(size = 2, color = "black"),
+         whisker_args = list(color = "black"),
+         vline = geom_vline(xintercept = 0, colour = "grey50", linetype = 2)) +
+  theme_ipsum() + 
+  labs(
+    x = "Points"
+  )
+ggsave("accuracy_comparison.png", width = 5, height = 6)
+```
+```{r}
+skim(train_df)
+```
+
+```{r}
+single_game <- train_df[5,]
+single_game
+```
+
+
+```{r}
+library(DALEX)
+train <- train_df %>% filter(!is.na(is_rainy)) %>% select(y, points_scored, points_allowed, home_division, home_no_division, is_windy, is_rainy, line_matchup, pass_matchup, rating_quarterback, rating_run_backs, rating_kicker, rating_line_backer) %>% 
+  as.data.frame()
+test <-  test_df %>% filter(game_id == "2019_21_SF_KC") %>% 
+  filter(!is.na(is_rainy)) %>% select(points_scored, points_allowed, home_division, home_no_division, is_windy, is_rainy, line_matchup, pass_matchup, rating_quarterback, rating_run_backs, rating_kicker, rating_line_backer) %>% 
+  as.data.frame()
+
+lm_model <- lm(y ~ ., data = train)
+explainer_lm <- explain(lm_model,
+                         data = train,
+                         y = train$y)
+
+single_game <- test[2,]
+explainer_lm %>% predict_parts(new_observation = single_game) %>% plot(max_vars=12, desc_sorting = FALSE) +
+  theme_ipsum() +
+  theme(legend.position = "none")
+ggsave("accuracy_comparison.png", width = 7, height = 9)
+```
+
+```{r}
+test_df %>% filter(game_id == "2019_21_SF_KC")
+```
+
+
+```{r}
+help <- augment(basic_model, test_df) %>% 
+  select(game_id, offense_team, y, .pred) %>% 
+  group_by(game_id) %>% 
+  filter(n() == 2) %>% 
+  ungroup()
+
+
+result <- help %>% 
+  inner_join(help, by = c("game_id"), suffix = c("", "_b")) %>% 
+  filter(offense_team != offense_team_b) %>% 
+  group_by(game_id) %>% 
+  summarise(across(offense_team:.pred_b, first)) %>% 
+  ungroup() %>% 
+  mutate(
+    first_team_one = y >= y_b, 
+    pred_first_team_one = .pred >= .pred_b,
+    right_prediction = as.double(first_team_one == pred_first_team_one)
+  ) %>%  
+  summarise(
+    acc = mean(right_prediction, na.rm = T),
+    n = n()) %>% 
+  mutate(deviation_threshold = 0)
+
+for (deviation_threshold in seq(0.5, 8.5, 0.5)) {
+  part_result <- help %>% 
+    inner_join(help, by = c("game_id"), suffix = c("", "_b")) %>% 
+    filter(offense_team != offense_team_b) %>% 
+    group_by(game_id) %>% 
+    summarise(across(offense_team:.pred_b, first)) %>% 
+    ungroup() %>% 
+    filter(abs(.pred - .pred_b) >= deviation_threshold) %>% 
+    mutate(
+      first_team_one = y >= y_b, 
+      pred_first_team_one = .pred >= .pred_b,
+      right_prediction = as.double(first_team_one == pred_first_team_one)
+    ) %>%  
+    summarise(
+      acc = mean(right_prediction, na.rm = T),
+      n = n()) %>% 
+    mutate(deviation_threshold = deviation_threshold)
+  result <- result %>% 
+    union_all(part_result)
+}
+
+result_subset = result %>% 
+  filter(deviation_threshold %% 2 == 0) %>% 
+  mutate(
+    n = paste0("n=", n),
+    acc = acc + 0.03)
+result_subset
+result
+result %>% 
+  ggplot(aes(x = deviation_threshold, y = acc)) +
+  geom_line(color = "grey") + 
+  geom_point(color = "#ed713a") +
+  geom_text(aes(x = deviation_threshold, y = acc, label = n), color = "#ed713a", data = result_subset) +
+  theme_ipsum() +
+  ylim(0.5, 1) + 
+  labs(
+    x = "Minimal Deviation of predicted Scores",
+    y = "Percentage of correctly predicted Games"
+  )
+ggsave("accuracy_comparison.png", width = 8, height = 4)
+```
+
+
+```{r}
+train_df <- train_df %>% 
+  mutate(
+    home_division = as.double(offense_home + div_game == 2),
+    home_no_division = as.double(offense_home & div_game == 0),
+    line_advantage = rating_off_line - rating_def_line, 
+    pass_advantage = rating_pass_receiver - rating_def_backs,
+  )
+```
+
+```{r}
+train_df %>% 
+  group_by(dual_threat_qb, rating_line_backer) %>% 
+  summarise(
+    mean_residual = mean(y, na.rm = T),
+    n = n()
+  ) %>% 
+  ungroup() %>% 
+  ggplot(aes(x=dual_threat_qb, y=rating_line_backer, fill=mean_residual)) +
+  geom_tile(color = "white", linewidth = 0.6) +
+   geom_text(aes(label = round(mean_residual)), size = 5,  color = "white") +
+  scale_fill_viridis_c() +
+  theme_ipsum()
+```
+
+
+```{r}
+train_df %>% 
+  ggplot(aes(as_factor(dual_threat_qb), y)) +
+  geom_boxplot()
+```
+
+```{r}
+train_df %>% 
+  group_by(rating_quarterback, rating_off_line) %>% 
+  summarise(
+    mean_residual = mean(y, na.rm = T),
+    n = n()
+  ) %>% 
+  ungroup() %>% 
+  ggplot(aes(x=rating_quarterback, y=rating_off_line, fill=mean_residual)) +
+  geom_tile(color = "white", linewidth = 0.6) +
+   geom_text(aes(label = round(mean_residual)), size = 5,  color = "white") +
+  scale_fill_viridis_c() +
+  theme_ipsum()
+```
+
+
+```{r}
+train_df %>% 
+  mutate(
+    line_advantage
+  )
+```
+
+
+```{r}
+library(hrbrthemes)
+train_df %>% 
+  group_by(rating_def_line, rating_off_line) %>% 
+  summarise(
+    mean_residual = mean(y, na.rm = T),
+    n = n()
+  ) %>% 
+  ungroup() %>% 
+  ggplot(aes(x=rating_off_line, y=rating_def_line, fill=mean_residual)) +
+  geom_tile(color = "white", linewidth = 0.6) +
+  geom_text(aes(label = round(mean_residual)), size = 6,  color = "white") +
+  scale_fill_distiller(palette = "Oranges", direction = 1) +
+  theme_ipsum() +
+  theme(legend.position = "None") +
+  labs(
+    x = "Rating Offense Line", 
+    y = "Rating Defensive line"
+  )
+
+ggsave("accuracy_comparison.png", width = 4, height = 4)
+```
+
+```{r}
+train_df %>% 
+  mutate(line_score = rating_off_line - rating_def_line) %>% 
+  ggplot(aes(as_factor(line_score), y)) +
+  geom_boxplot()
+```
+
+
+```{r}
+train_df %>% 
+  group_by(dual_threat_qb, rating_quarterback, rating_pass_receiver) %>% 
+  summarise(
+    mean_residual = mean(y, na.rm = T),
+    n = n()
+  ) %>% 
+  ungroup() %>% 
+  ggplot(aes(x=rating_quarterback, y=rating_pass_receiver, fill=mean_residual)) +
+  geom_tile(color = "white", linewidth = 0.6) +
+  scale_fill_viridis_c() +
+  theme_ipsum() + 
+  facet_wrap(~ dual_threat_qb)
+```
+
+```{r}
+library(hrbrthemes)
+train_df %>% 
+  ggplot(aes(x=as_factor(rating_quarterback), y=y)) +
+  geom_boxplot() +
+  facet_wrap(~ dual_threat_qb)
+```
+
+```{r}
+train_df %>% 
+  ggplot(aes(x=as_factor(rating_run_backs), y=y)) +
+  geom_boxplot()
+```
+
+```{r}
+train_df %>% 
+  group_by(rating_pass_receiver, rating_def_backs) %>% 
+  summarise(
+    mean_residual = mean(y, na.rm = T),
+    n = n()
+  ) %>% 
+  ungroup() %>% 
+  ggplot(aes(x=rating_pass_receiver, y=rating_def_backs, fill=mean_residual)) +
+  geom_tile(color = "white", linewidth = 0.6) +
+  geom_text(aes(label = round(mean_residual)), size = 6,  color = "white") +
+  scale_fill_distiller(palette = "Oranges", direction = 1) +
+  theme_ipsum() +
+  theme(legend.position = "None") +
+  labs(
+    x = "Rating Receiver", 
+    y = "Rating Defensive Backs"
+  )
+
+ggsave("accuracy_comparison.png", width = 4, height = 4)
+```
+
+```{r}
+train_df %>% 
+  group_by(rating_pass_receiver, rating_line_backer) %>% 
+  summarise(
+    mean_residual = mean(y, na.rm = T),
+    n = n()
+  ) %>% 
+  ungroup() %>% 
+  ggplot(aes(x=rating_pass_receiver, y=rating_line_backer, fill=mean_residual)) +
+  geom_tile(color = "white", linewidth = 0.6) +
+  geom_text(aes(label = round(mean_residual)), size = 5,  color = "white") +
+  scale_fill_viridis_c(option = "viridis") +
+  theme_ipsum() +
+  theme(legend.position = "None") +
+  coord_fixed()
+
+train_df %>% 
+  mutate(
+    score = rating_pass_receiver - rating_def_backs
+  ) %>% 
+  ggplot(aes(x=as_factor(score), y=y)) +
+  geom_boxplot()
+```
+
+```{r}
+train_df %>% 
+  group_by(rating_pass_receiver, rating_def_backs) %>% 
+  summarise(
+    mean_residual = mean(y, na.rm = T),
+    n = n()
+  ) %>% 
+  ungroup() %>% 
+  ggplot(aes(x=rating_pass_receiver, y=rating_def_backs, fill=mean_residual)) +
+  geom_tile(color = "white", linewidth = 0.6) +
+  geom_text(aes(label = round(mean_residual)), size = 5,  color = "white") +
+  scale_fill_viridis_c(option = "viridis") +
+  theme_ipsum() +
+  theme(legend.position = "None") +
+  coord_fixed()
+```
+
+
+```{r}
+train_df %>% 
+  group_by(rating_line_backer, rating_def_backs) %>% 
+  summarise(
+    mean_residual = mean(y, na.rm = T),
+    n = n()
+  ) %>% 
+  ungroup() %>% 
+  ggplot(aes(x=rating_line_backer, y=rating_def_backs, fill=mean_residual)) +
+  geom_tile(color = "white", linewidth = 0.6) +
+  scale_fill_viridis_c() +
+  theme_ipsum() 
+```
+
+
+```{r}
+train_df %>% 
+  group_by(rating_run_backs, rating_off_line) %>% 
+  summarise(
+    mean_residual = mean(y, na.rm = T),
+    n = n()
+  ) %>% 
+  ungroup() %>% 
+  ggplot(aes(x=rating_run_backs, y=rating_off_line, fill=mean_residual)) +
+  geom_tile(color = "white", linewidth = 0.6) +
+  scale_fill_viridis_c() +
+  theme_ipsum()
+```
+
+
+```{r}
+train_df %>% 
+  group_by(rating_pass_receiver, rating_def_backs) %>% 
+  summarise(
+    mean_residual = mean(.resid, na.rm = T),
+    n = n()
+  ) %>% 
+  ungroup() %>% 
+  ggplot(aes(x=rating_pass_receiver, y=rating_def_backs, fill=mean_residual)) +
+  geom_tile(color = "white", linewidth = 0.6) +
+  scale_fill_viridis_c() +
+  theme_ipsum()
+```
+
+
+```{r}
+library(hrbrthemes)
+train_df %>% 
+  group_by(rating_def_line, rating_off_line) %>% 
+  summarise(
+    mean_residual = mean(.resid, na.rm = T),
+    n = n()
+  ) %>% 
+  ungroup() %>% 
+  ggplot(aes(x=rating_def_line, y=rating_off_line, fill=mean_residual)) +
+  geom_tile(color = "white", linewidth = 0.6) +
+  scale_fill_viridis_c() +
+  theme_ipsum()
+```
+
+
+```{r}
+train_df %>% 
+  mutate(defense_score = rating_def_backs + rating_def_line + rating_line_backer) %>% 
+  group_by(defense_score) %>% 
+  summarise(
+    mean_residual = mean(.resid, na.rm = T),
+    n = n()
+  ) %>% 
+  ungroup() %>% 
+  filter(n >= 10) %>% 
+  arrange(desc(mean_residual)) %>% 
+  ggplot(aes(x=defense_score, y=mean_residual)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = F)
+  
+
+train_df %>% 
+  mutate(line_score = rating_off_line - rating_def_line) %>% 
+  group_by(line_score) %>% 
+  summarise(
+    mean_residual = mean(.resid, na.rm = T),
+    n = n()
+  ) %>% 
+  ungroup() %>% 
+  filter(n >= 10) %>% 
+  arrange(desc(mean_residual)) %>% 
+  ggplot(aes(x=line_score, y=mean_residual)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = F)
+
+train_df %>% 
+  mutate(pass_score = rating_quarterback + rating_pass_receiver - rating_def_backs) %>% 
+  group_by(dual_threat_qb, pass_score) %>% 
+  summarise(
+    mean_residual = mean(.resid, na.rm = T),
+    n = n()
+  ) %>% 
+  ungroup() %>% 
+  filter(n >= 10) %>% 
+  arrange(dual_threat_qb, desc(mean_residual)) %>% 
+  ggplot(aes(x=pass_score, y=mean_residual, color = as_factor(dual_threat_qb), group = dual_threat_qb)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = F)
+
+train_df %>% 
+  mutate(receiver_score = rating_pass_receiver - rating_def_backs) %>% 
+  group_by(rating_quarterback, receiver_score) %>% 
+  summarise(
+    mean_residual = mean(.resid, na.rm = T),
+    n = n()
+  ) %>% 
+  ungroup() %>% 
+  filter(n >= 10) %>% 
+  arrange(rating_quarterback, desc(mean_residual)) %>% 
+  ggplot(aes(x=receiver_score, y=mean_residual, color = as_factor(rating_quarterback), group = rating_quarterback)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = F)
+
+train_df %>% 
+  group_by(rating_kicker) %>% 
+  summarise(
+    mean_residual = mean(.resid, na.rm = T),
+    n = n()
+  ) %>% 
+  ungroup() %>% 
+  filter(n >= 10) %>% 
+  arrange(desc(mean_residual)) %>% 
+  ggplot(aes(x=rating_kicker, y=mean_residual)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = F)
+
+train_df %>% 
+  group_by(rating_def_line, rating_run_backs) %>% 
+  summarise(
+    mean_residual = mean(.resid, na.rm = T),
+    n = n()
+  ) %>% 
+  ungroup() %>% 
+  filter(n >= 10) %>% 
+  arrange(rating_def_line, desc(mean_residual))  %>% 
+  ggplot(aes(x=rating_def_line, y=mean_residual, color = as_factor(rating_run_backs), group = rating_run_backs)) +
+  geom_point() +
+  geom_smooth(method = "lm", se = F)
+  
+```
+
+# 6. Modelling
+Load and transform data
+```{r message = FALSE, warning=FALSE}
+madden_enriched_path <- file.path("..","..","data", "processed_data", "features_with_madden.csv")
+df <- read_csv(madden_enriched_path, show_col_types = FALSE) %>% 
+  filter(season < 2017) %>%
+  mutate(
+    temperature = (temperature - 32) * 5 /9,
+    is_hot = as.integer(temperature >= 30),
+    is_cold = as.integer(temperature <= -5),
+    stadium_closed = roof %in% c("dome", "closed"),
+    is_windy = if_else(stadium_closed, 0, as.double(wind_speed > 15)),
+    is_rainy = if_else(stadium_closed, 0, if_else(str_detect(estimated_condition, "Rain"), 1, 0)),
+    is_snowing = if_else(stadium_closed, 0, if_else(str_detect(estimated_condition, "Snow"), 1, 0)),
+    rest_time_difference = if_else(offense_home, rest_time_home_team - rest_time_away_team, rest_time_away_team - rest_time_home_team)
+  )
+df
+```
+
+Create foundation for a basic model that does not use summary statistics.
+```{r message = FALSE}
+df %>% colnames()
+mod_basic <- lm(y ~ season + points_scored + points_allowed + elo_prob_offense_win + offense_home + monday_game + div_game + is_regular_season + is_hot + is_cold + is_windy + is_rainy + is_snowing + rest_time_difference + third_down_conversion_rate + third_down_success_rate, data = df)
+
+mod_advanced <- mod_basic <- lm(y ~ season + points_scored + points_allowed + elo_prob_offense_win + offense_home + monday_game + div_game + is_regular_season + is_hot + is_cold + is_windy + is_rainy + is_snowing + rest_time_difference + third_down_conversion_rate + third_down_success_rate + avg_epa_offense + avg_rush_epa_offense + avg_pass_epa_offense + n_interception_offense + n_qb_hit_offense + n_sacks_offense + n_fumbles + percentage_pass_attemps, data = df)
+summary(mod_advanced)
+```
+
+# 7. Second approach
+Load and transform
+```{r message = FALSE, warning=FALSE}
+madden_enriched_path <- file.path("..", "..","data", "processed_data", "features_with_madden.csv")
+df <- read_csv(madden_enriched_path, show_col_types = FALSE) %>% 
+  mutate(
+    temperature = (temperature - 32) * 5 /9,
+    is_hot = as.integer(temperature >= 30),
+    is_cold = as.integer(temperature <= -5),
+    stadium_closed = roof %in% c("dome", "closed"),
+    is_windy = if_else(stadium_closed, 0, as.double(wind_speed > 15)),
+    is_rainy = if_else(stadium_closed, 0, if_else(str_detect(estimated_condition, "Rain"), 1, 0)),
+    is_snowing = if_else(stadium_closed, 0, if_else(str_detect(estimated_condition, "Snow"), 1, 0)),
+    is_bad_condition = if_else(is_rainy + is_snowing + is_windy + is_cold >= 1, 1, 0),
+    rest_time_difference = if_else(offense_home, rest_time_home_team - rest_time_away_team, rest_time_away_team - rest_time_home_team)
+  )
+
+offset_data <- df %>% 
+  select(season, home_team, tz_offset) %>% 
+  group_by(season, home_team) %>% 
+  summarise(tz_offset = last(tz_offset)) %>% 
+  ungroup()
+
+df <- df %>% 
+  left_join(
+  offset_data,
+  by = c("season", "away_team" = "home_team"), 
+  suffix = c("_home", "_away")
+  ) %>% 
+  mutate(
+    tz_diff_offense = if_else(offense_home, 0, abs(tz_offset_home - tz_offset_away)),
+    tz_diff_defense = if_else(offense_home, abs(tz_offset_home - tz_offset_away), 0)
+  )
+df <- df %>% select(season, points_scored, n_interception_offense, n_qb_hit_offense, n_sacks_offense, n_fumbles, field_goal_success_rate, offense_team, defense_team, offense_home, monday_game, thursday_game, is_regular_season, rest_time_difference,third_down_conversion_rate, percentage_pass_attemps, div_game, points_allowed, third_down_success_rate,percentage_incomplete_passes_forced, n_interception_defense, n_fumble_forced, n_qb_hit_defense, n_sacks_defense, rating_kicker:pass_block_line_backer, elo_prob_offense_win, is_hot, is_cold, is_bad_condition, is_windy, is_rainy, is_snowing, tz_diff_offense, tz_diff_defense, y)
+```
+```{r}
+skim(df)
+```
+
+```{r}
+#df <- df %>% select(-c(speed_off_line, acceleration_kicker, agility_kicker, agility_off_line, jumping_kicker, jumping_off_line, jumping_quarterback, strength_kicker, awareness_kicker, catching_kicker, catching_off_line, catching_quarterback, throw_power_kicker, throw_power_off_line, throw_power_run_backs, throw_power_tight_end, throw_power_wide_receiver, throw_accuracy_kicker, throw_accuracy_off_line, throw_accuracy_run_backs, throw_accuracy_tight_end, throw_accuracy_wide_receiver, run_block_kicker, run_block_quarterback, run_block_wide_receiver, pass_block_kicker, pass_block_quarterback, pass_block_run_backs, pass_block_tight_end, speed_def_line, catching_def_backs, catching_def_line, catching_line_backer, throw_power_def_backs, throw_power_def_line, throw_power_line_backer, throw_accuracy_def_backs, throw_accuracy_def_line, throw_accuracy_line_backer))
+
+tree_rec <- recipe(y ~ ., data = df) %>%
+  step_impute_median(all_numeric())
+
+tune_spec <- rand_forest(trees = 1000) %>%
+  set_mode("regression") %>%
+  set_engine("ranger")
+
+ranger_workflow <-
+  workflow() %>%
+  add_recipe(tree_rec) %>%
+  add_model(tune_spec)
+
+set.seed(234)
+df_folds <- vfold_cv(df)
+
+set.seed(74403)
+
+
+collect_metrics(ranger_rs)
+```
+
+```{r}
+rf_reg_spec <- 
+    rand_forest(trees = 2000, min_n = 15) %>% 
+    # This model can be used for classification or regression, so set mode
+    set_mode("regression") %>% 
+    set_engine("ranger", importance = "impurity")
+rf_reg_fit <- rf_reg_spec %>% fit(y ~ ., data = df)
+```
+
+```{r}
+library(vip)
+rf_reg_fit %>% 
+  vip(num_features = 40)
+rf_reg_fit
+```
+
+
+```{r}
+df <- df %>% 
+  pivot_longer(cols = off_line:line_backer, names_to = "position_group", values_to = "rating") %>% 
+  group_by(season, position_group) %>% 
+  mutate(
+    quantile_group = case_when(
+      rating >= quantile(rating, 0.7) ~ 1,
+      rating >= quantile(rating, 0.3) ~ 0,
+      TRUE ~ -1
+    )
+  ) %>% 
+  pivot_wider(id_cols = season:y, names_from = "position_group", values_from = "quantile_group") %>% 
+  ungroup()
+```
+
+Split the data
+```{r message = FALSE, warning=FALSE}
+df_split <-  initial_time_split(df, prop = 0.9)
+train_df <- training(df_split)
+test_df <- testing(df_split)
+```
+
+```{r}
+basic_model <- 
+  linear_reg() %>% 
+  set_engine("lm") %>% 
+  fit(y ~ offense_home + div_game + is_bad_condition + elo_prob_offense_win + points_scored + points_allowed, data = train_df)
+tidy(basic_model) %>% 
+  dwplot(dot_args = list(size = 2, color = "black"),
+         whisker_args = list(color = "black"),
+         vline = geom_vline(xintercept = 0, colour = "grey50", linetype = 2))
+train_df <- augment(basic_model, train_df)
+```
+
+
+```{r}
+
+```
+speed_quarterback, acceleration_quarterback, agility_quarterback, speed_pass_receiver, speed_run_backs, strength_off_line, throw_power_quarterback, throw_accuracy_quarterback, run_block_off_line, pass_block_off_line, speed_def_backs
+
+
+
+```{r}
+knn_rec <- recipe(y ~ off_line + pass_receiver + quarterback + run_backs + def_backs + def_line + line_backer, data = train_df)
+knn_spec <- nearest_neighbor(
+  mode = "regression",
+  engine = "kknn",
+  neighbors = 15
+) 
+knn_fit <- knn_spec %>% 
+  fit(y ~ off_line + pass_receiver + quarterback + run_backs + def_backs + def_line + line_backer, data = train_df)
+set.seed(123)
+folds <- vfold_cv(train_df)
+knn_rs <- knn_spec %>%
+  fit_resamples(
+    knn_rec,
+    folds,
+    metrics = metric_set(rmse, rsq),
+    control = control_resamples(save_pred = TRUE)
+  )
+knn_rs %>%
+  collect_metrics()
+```
+
+```{r}
+skim(train_df)
+train_df <- train_df %>% 
+  mutate(
+    offense_tz_advantage = tz_diff_defense - tz_diff_offense
+  )
+train_df %>% 
+  ggplot(aes(x=rest_time_difference)) +
+  geom_density()
+```
+
+```{r}
+lm_fit <- 
+  linear_reg() %>% 
+  set_engine("lm") %>% 
+  fit(y ~ offense_home + div_game + is_bad_condition + elo_prob_offense_win+ points_scored + points_allowed + quarterback +
+        pass_receiver + off_line + def_line + line_backer + def_backs, data = train_df)
+tidy(lm_fit) %>% 
+  dwplot(dot_args = list(size = 2, color = "black"),
+         whisker_args = list(color = "black"),
+         vline = geom_vline(xintercept = 0, colour = "grey50", linetype = 2))
+train_df_aug <- augment(lm_fit, train_df)
+
+knn_spec <- nearest_neighbor(
+  mode = "regression",
+  engine = "kknn",
+  neighbors = 15
+) 
+knn_fit <- knn_spec %>% 
+  fit(.resid ~ off_line + pass_receiver + quarterback + run_backs + def_backs + def_line + line_backer, data = train_df_aug)
+#predict(knn_fit, train_df_aug)
+summary(lm_fit)
+```
+run_game = okay
+line_diff = okay
+run_diff =  okay
+```{r}
+knn_rec <- recipe(.resid ~ off_line + pass_receiver + quarterback + run_backs + def_backs + def_line + line_backer, data = train_df_aug)
+knn_spec <- nearest_neighbor(
+  mode = "regression",
+  engine = "kknn",
+  neighbors = 15
+) 
+knn_fit <- knn_spec %>% 
+  fit(.resid ~ off_line + pass_receiver + quarterback + run_backs + def_backs + def_line + line_backer, data = train_df_aug)
+set.seed(123)
+folds <- vfold_cv(train_df_aug)
+knn_rs <- knn_spec %>%
+  fit_resamples(
+    knn_rec,
+    folds,
+    metrics = metric_set(rmse, rsq),
+    control = control_resamples(save_pred = TRUE)
+  )
+knn_rs %>%
+  collect_metrics()
+```
+speed_quarterback, acceleration_quarterback, agility_quarterback, speed_pass_receiver, speed_run_backs, strength_off_line, throw_power_quarterback, throw_accuracy_quarterback, run_block_off_line, pass_block_off_line, speed_def_backs
+
+
+
+ccuracy = short_throw_accuracy medium_throw_accuracy deep_throw_accruacy
+```{r}
+madden_14 %>% clean_names()# %>%  rename_all(~ sub("plyr_", "", .x))
+```
+throw_accuracy = throw_accuracy_short throw_accuracy_mid throw_accuracy_deep
+"pass_block" = "pass_blocking", run_blocking
+```{r}
+madden_19 %>% clean_names()# %>%  rename_all(~ sub("plyr_", "", .x))
+```
+
+```{r}
+madden_05_path <- file.path("..","..","data", "raw_data", "madden", "madden_nfl_05.csv")
+madden_06_path <- file.path("..","..","data", "raw_data", "madden", "madden_nfl_06.csv")
+madden_07_path <- file.path("..","..","data", "raw_data", "madden", "madden_nfl_07.csv")
+madden_08_path <- file.path("..","..","data", "raw_data", "madden", "madden_nfl_08.csv")
+madden_09_path <- file.path("..","..","data", "raw_data", "madden", "madden_nfl_09.csv")
+madden_10_path <- file.path("..","..","data", "raw_data", "madden", "madden_nfl_10.csv")
+madden_11_path <- file.path("..","..","data", "raw_data", "madden", "madden_nfl_11.csv")
+madden_12_path <- file.path("..","..","data", "raw_data", "madden", "madden_nfl_12.csv")
+madden_13_path <- file.path("..","..","data", "raw_data", "madden", "madden_nfl_13.xlsx")
+madden_14_path <- file.path("..","..","data", "raw_data", "madden", "madden_nfl_14.xlsx")
+madden_15_path <- file.path("..","..","data", "raw_data", "madden", "madden_nfl_15.xlsx")
+madden_16_path <- file.path("..","..","data", "raw_data", "madden", "madden_nfl_16.xlsx")
+madden_17_path <- file.path("..","..","data", "raw_data", "madden", "madden_nfl_17.xlsx")
+madden_18_path <- file.path("..","..","data", "raw_data", "madden", "madden_nfl_18.xlsx")
+madden_19_path <- file.path("..","..","data", "raw_data", "madden", "madden_nfl_19.xlsx")
+madden_20_path <- file.path("..","..","data", "raw_data", "madden", "madden_nfl_20.csv")
+madden_21_path <- file.path("..","..","data", "raw_data", "madden", "madden_nfl_21.csv")
+
+madden_05 <- read_csv(madden_05_path) %>% 
+  rename("first_name" = "FIRSTNAME", "last_name" = "LASTNAME", "position" = "Position", 
+         "number" = "JERSEYNUM", "rating" = "OVERALLRATING") %>% 
+  clean_names() %>% 
+  rename("throw_power" = "throwpower", "throw_accuracy" = "throwaccuracy", "run_block" = "runblock", "pass_block" = "passblock") %>% 
+  select(parsed_team, first_name, last_name, number, position, rating, speed, acceleration, agility, jumping, strength, awareness, catching, throw_power, throw_accuracy, run_block, pass_block, tackle, awareness) %>% 
+  mutate(season = 2004)
+
+madden_06 <- read_csv(madden_06_path) %>% 
+  rename("first_name" = "FIRSTNAME", "last_name" = "LASTNAME", "position" = "Position", 
+         "number" = "JERSEYNUMBER", "rating" = "OVERALLRATING") %>% 
+  clean_names() %>% 
+  rename("throw_power" = "throwpower", "throw_accuracy" = "throwaccuracy", "run_block" = "runblock", "pass_block" = "passblock") %>% 
+  select(parsed_team, first_name, last_name, number, position, rating, speed, acceleration, agility, jumping, strength, awareness, catching, throw_power, throw_accuracy, run_block, pass_block, tackle, awareness) %>% 
+  mutate(season = 2005)
+
+madden_07 <- read_csv(madden_07_path) %>% 
+  rename("first_name" = "PLYR_FIRSTNAME", "last_name" = "PLYR_LASTNAME", "position" = "Position", 
+         "number" = "PLYR_JERSEYNUM", "rating" = "PLYR_OVERALLRATING") %>% 
+  clean_names() %>%  
+  rename_all(~ sub("plyr_", "", .x)) %>% 
+  rename("throw_power" = "throwpower", "throw_accuracy" = "throwaccuracy", "run_block" = "runblock", "pass_block" = "passblock") %>% 
+  select(parsed_team, first_name, last_name, number, position, rating, speed, acceleration, agility, jumping, strength, awareness, catching, throw_power, throw_accuracy, run_block, pass_block, tackle, awareness) %>% 
+  mutate(season = 2006)
+
+madden_08 <- read_csv(madden_08_path) %>% 
+  rename("first_name" = "First_Name", "last_name" = "Last_Name", "position" = "Position", 
+         "number" = "Jersey_#", "rating" = "Overall_Rating") %>% 
+  clean_names() %>%  
+  select(parsed_team, first_name, last_name, number, position, rating, speed, acceleration, agility, jumping, strength, awareness, catching, throw_power, throw_accuracy, run_block, pass_block, tackle, awareness) %>% 
+  mutate(season = 2007)
+
+madden_09 <- read_csv(madden_09_path) %>% 
+  rename("first_name" = "FIRSTNAME", "last_name" = "LASTNAME", "position" = "Position", 
+         "number" = "JERSEYNUM", "rating" = "OVERALL") %>% 
+  clean_names() %>% 
+  rename("throw_power" = "throwpower", "throw_accuracy" = "throwaccuracy", "run_block" = "runblock", "pass_block" = "passblock") %>% 
+  select(parsed_team, first_name, last_name, number, position, rating, speed, acceleration, agility, jumping, strength, awareness, catching, throw_power, throw_accuracy, run_block, pass_block, tackle, awareness) %>%
+  mutate(season = 2008)
+
+madden_10 <- read_csv(madden_10_path) %>% 
+  rename("team" = "Team", "first_name" = "First", "last_name" = "Last", "position" = "POS", 
+         "rating" = "OVR") %>% 
+  clean_names() %>% 
+  select(team, first_name, last_name, position, rating, speed, acceleration) %>%
+  mutate(season = 2009)
+
+madden_11 <- read_csv(madden_11_path) %>% 
+  rename("team" = "TEAM", "first_name" = "FIRST NAME", "last_name" = "LAST NAME", "position" = "POSITION", 
+         "number" = "JERSEY #", "rating" = "OVERALL RATING") %>% 
+  clean_names() %>% 
+  rename("run_block" = "runblock", "pass_block" = "passblock", "acceleration" = "accleration") %>% 
+  select(team, first_name, last_name, number, position, rating, speed, acceleration, agility, jumping, strength, awareness, catching, throw_power, throw_accuracy, run_block, pass_block, tackle, awareness) %>%
+  mutate(season = 2010)
+
+madden_12 <- read_csv(madden_12_path) %>% 
+  filter(Name != "Name") %>% 
+  filter(!is.na(Name)) %>% 
+  extract(Name, c("first_name", "last_name"), "([^ ]+) (.*)") %>% 
+  rename("position" = "Position", "rating" = "Overall") %>% 
+  clean_names() %>% 
+  type_convert() %>% 
+  select(parsed_team, first_name, last_name, position, rating, speed, acceleration, agility, jumping, strength, awareness, catching, throw_power, throw_accuracy, awareness) %>%
+  mutate(
+    season = 2011,
+    rating = as.double(rating)
+  )
+
+madden_13 <- read_excel(madden_13_path) %>% 
+  rename("team" = "Team", "first_name" = "First Name", "last_name" = "Last Name", "position" = "Position", 
+         "rating" = "Overall") %>% 
+  clean_names() %>% 
+  select(team, first_name, last_name, position, rating, speed, acceleration, agility, jumping, strength, awareness, catching, throw_power, throw_accuracy, run_block, pass_block, tackle, awareness) %>%
+  mutate(season = 2012)
+
+madden_14 <- read_excel(madden_14_path) %>% 
+  rename("team" = "Team", "first_name" = "First Name", "last_name" = "Last Name", "position" = "Position", 
+         "number" = "Jersey", "rating" = "Overall") %>% 
+  clean_names() %>% 
+  select(team, first_name, last_name, number, position, rating, speed, agility, jumping, awareness, catching, throw_power, throw_accuracy, run_block, pass_block, tackle, awareness) %>%
+  mutate(season = 2013)
+
+madden_15 <- read_excel(madden_15_path) %>% 
+  rename("team" = "Team", "first_name" = "First Name", "last_name" = "Last Name", "position" = "Position", 
+         "number" = "Jersey", "rating" = "Overall") %>% 
+  clean_names() %>% 
+  type_convert() %>% 
+  mutate(throw_accuracy = (throw_accuracy_short + throw_accuracy_medium + throw_accuracy_deep) / 3 ) %>% 
+  select(team, first_name, last_name, number, position, rating, speed, acceleration, agility, jumping, strength, awareness, catching, throw_power, throw_accuracy, run_block, pass_block, tackle, awareness) %>%
+  mutate(season = 2014,)
+
+madden_16 <- read_excel(madden_16_path) %>% 
+  rename("team" = "Team", "first_name" = "First Name", "last_name" = "Last Name", "position" = "Position", "number" = "Jersey Number", "rating" = "OVR") %>% 
+  clean_names() %>% 
+  type_convert() %>% 
+  mutate(throw_accuracy = (throw_accuracy_short + throw_accuracy_mid + throw_accuracy_deep) / 3) %>% 
+  select(team, first_name, last_name, number, position, rating, speed, acceleration, agility, jumping, strength, awareness, catching, throw_power, throw_accuracy, run_block, pass_block, tackle, awareness) %>%
+  mutate(season = 2015)
+
+madden_17 <- read_excel(madden_17_path) %>% 
+  rename("team" = "Team", "first_name" = "First Name", "last_name" = "Last Name", "position" = "Position", 
+         "rating" = "Overall") %>% 
+  clean_names() %>% 
+  type_convert() %>% 
+  rename("run_block" = "run_blocking", "pass_block" = "pass_blocking") %>% 
+  select(team, first_name, last_name, position, rating, speed, acceleration, agility, jumping, strength, awareness, catching, throw_power, throw_accuracy, run_block, pass_block, tackle, awareness) %>%
+  mutate(season = 2016)
+
+madden_18 <- read_excel(madden_18_path) %>% 
+  rename("team" = "Team", "first_name" = "First Name", "last_name" = "Last Name", "position" = "Position", 
+         "number" = "Jersey Number", "rating" = "Overall") %>% 
+  clean_names() %>% 
+  type_convert() %>% 
+  select(team, first_name, last_name, number, position, rating, speed, acceleration, agility, jumping, strength, awareness, catching, throw_power, throw_accuracy, run_block, pass_block, tackle, awareness) %>%
+  mutate(season = 2017)
+
+madden_19 <- read_excel(madden_19_path) %>% 
+  extract(Name, c("first_name", "last_name"), "([^ ]+) (.*)") %>% 
+  rename("team" = "Team", "position" = "Position", 
+         "number" = "Jersey #", "rating" = "Overall") %>% 
+  clean_names() %>% 
+  type_convert() %>% 
+  rename("catching" = "catch") %>% 
+  mutate(throw_accuracy = (throw_accuracy_short + throw_accuracy_mid + throw_accuracy_deep) / 3) %>% 
+  select(team, first_name, last_name, number, position, rating, speed, acceleration, agility, jumping, strength, awareness, catching, throw_power, throw_accuracy, run_block, pass_block, tackle, awareness) %>%
+  mutate(season = 2018)
+
+madden_20 <- read_csv(madden_20_path) %>% 
+  filter(is.na(`AFC Pro Bowl Team`)) %>% 
+  extract(Name, c("first_name", "last_name"), "([^ ]+) (.*)") %>% 
+  rename("team" = "Team", "position" = "Position", 
+         "number" = "Jersey", "rating" = "Overall") %>% 
+  clean_names() %>% 
+  type_convert() %>% 
+  mutate(throw_accuracy = (short_throw_accuracy + medium_throw_accuracy + deep_throw_accruacy) / 3) %>% 
+  select(team, first_name, last_name, number, position, rating, speed, acceleration, agility, jumping, strength, awareness, catching, throw_power, throw_accuracy, run_block, pass_block, tackle, awareness) %>%
+  mutate(season = 2019)
+
+madden_21 <- read_csv(madden_21_path) %>% 
+  filter(is.na(`AFC Pro Bowl Team`)) %>% 
+  extract(`Full Name`, c("first_name", "last_name"), "([^ ]+) (.*)") %>% 
+  rename("team" = "Team", "position" = "Position", 
+         "number" = "Jersey Number", "rating" = "Overall Rating") %>% 
+  clean_names() %>% 
+  type_convert() %>% 
+  rename("pass_block" = "pass_blocking", "run_block" = "run_blocking") %>% 
+  mutate(throw_accuracy = (throw_accuracy_short + throw_accuracy_mid + throw_accuracy_deep) / 3) %>% 
+  select(team, first_name, last_name, number, position, rating, speed, acceleration, agility, jumping, strength, awareness, catching, throw_power, throw_accuracy, run_block, pass_block, tackle, awareness) %>%
+  mutate(season = 2020)
+```
+
+```{r}
+df <- tibble(name= c("Beal et al.", "Boulier and Stekler", "Sinha et al.", "FiveThirtyEight"), accuracy = c(67.5, 62.0, 63.8, 66.0)) %>% 
+  mutate(label_y = accuracy + 3.5)
+
+tibble(name= c("Beal et al.", "Boulier and Stekler", "Sinha et al.", "FiveThirtyEight"), accuracy = c(67.5, 62.0, 63.8, 66.0)) %>% 
+  mutate(label_y = accuracy + 0.1) %>% 
+  ggplot(aes(x=fct_reorder(name, accuracy), y=accuracy)) +
+  geom_segment(aes(x=fct_reorder(name, accuracy), xend=fct_reorder(name, accuracy), y=0, yend=accuracy), color="grey") +
+  geom_point(color="#ed713a", size=4) +
+  geom_text(aes(x=fct_reorder(name, accuracy), y =label_y, label=accuracy), color =  "#ed713a", data = df) +
+  theme_light() +
+  theme(
+    panel.grid.major.y = element_blank(),
+    panel.border = element_blank(),
+    panel.grid.major.x = element_blank(),
+    panel.grid.minor.x = element_blank(),
+    axis.ticks.y = element_blank(), 
+    axis.text.y = element_blank()
+  ) +
+  labs(
+    title = "Correctly predicted Game Outcomes [%]",
+    x = "",
+    y = ""
+  ) +
+  scale_y_continuous(breaks = NULL) 
+ggsave("accuracy_comparison.png", width = 4.5, height = 5.5)
+```
+```{r}
+madden %>% group_by(season, team_abbr) %>% 
+  summarise(n = n()) %>% 
+  ungroup() %>% 
+  summarise(mean_n = mean(n))
+```
+
+```{r}
+depth_charts %>% filter(season == 2004 &club_code == "JAX"  & week == 17 & depth_team == 1) %>% 
+  select(last_name, formation, position) %>% 
+  arrange(position)
+```
+
+
+```{r}
+help <- load_depth_charts(2012:2020) %>% 
+  mutate(player = paste(first_name, last_name, sep = " ")) %>% 
+  inner_join(
+    snap_count,
+    by = c("season", "week", "player", "club_code" = "team", "position")
+  ) %>% 
+  filter(formation == "Offense" & depth_team == 1) 
+
+load_depth_charts(2012:2020) %>% 
+  mutate(player = paste(first_name, last_name, sep = " ")) %>% 
+  inner_join(
+    snap_count,
+    by = c("season", "week", "player", "club_code" = "team", "position")
+  ) %>% 
+  filter(formation == "Offense") %>% 
+  ggplot(aes(x = fct_reorder(depth_team, depth_team), y = offense_pct)) +
+  geom_boxplot(outlier.alpha = 0) +
+  geom_boxplot(aes(x = fct_reorder(depth_team, depth_team), y = offense_pct), data = help, color = "#ed713a", outlier.alpha = 0) +
+  theme_ipsum() +
+  labs(
+    x = "Depth Team",
+    y = "Percentage of Snaps played"
+  )
+ggsave("accuracy_comparison.png", width = 4, height = 3)
+```
+```{r}
+library(ggridges)
+madden %>% 
+  mutate(season = str_sub(as.character(season), 3,4)) %>% 
+  ggplot(aes(x=season, y = rating)) +
+  geom_boxplot()
+madden %>% 
+  mutate(season = str_sub(as.character(season), 3,4)) %>% 
+  ggplot(aes(y=season, x=rating)) +
+  geom_density_ridges(alpha=0.6, fill = "#ed713a") +
+  theme_ridges() +
+  theme(
+    legend.position="none",
+    panel.spacing = unit(0.1, "lines"),
+    strip.text.x = element_text(size = 8)
+  ) +
+  xlab("Overall Player Rating") +
+  ylab("Season") +
+  xlim(45,100)
+
+ggsave("accuracy_comparison.png", width = 3.5, height = 5)
+```
+
