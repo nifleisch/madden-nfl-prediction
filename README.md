@@ -14,9 +14,11 @@ In fact, [Fernandes et al.](https://content.iospress.com/download/journal-of-spo
 
 While it is common practice to model game outcomes as a binary variable (win or loss), I believe that incorporating the actual scores provides a richer signal. For instance, a game ending 17-16 could easily have gone either way, while a 35-10 result clearly indicates a dominant performance by one team. However, this approach does add complexity, as it requires modeling two separate scores instead of a single binary variable.
 
+<img src="assets/score_modelling.png" width="300px">
+
 To address this added complexity, I model the scores of each game separately by focusing on the matchups between the offense and defense. Specifically, I predict the score that the offense will achieve against a given defense. An added benefit of this approach is that it effectively doubles the number of training examples, as each game consists of two such matchups. However, this method also introduces some bias, as it assumes the performance of a team’s offense and defense are independent of each other. In reality, factors like momentum—where a successful offensive drive might positively influence defensive performance—can create interdependencies between the two.
 
-| ![Image 1](assets/score_modelling.png) | ![Image 2](assets/two_prediction_problems.png) |
+<img src="assets/two_prediction_problems.png" width="300px">
 
 This script downloads Madden ratings data for a given range of years from `https://maddenratings.weebly.com/`. It stores the data as CSV files in a directory named `madden_data`.
 
