@@ -18,6 +18,9 @@ To address this added complexity, I model the scores of each game separately by 
 
 <img src="assets/score_modelling.png" width="300px">            <img src="assets/two_prediction_problems.png" width="300px">
 
+## Challenges
+### 1. Selecting relevant Player Ratings for each Games
+
 This script downloads Madden ratings data for a given range of years from `https://maddenratings.weebly.com/`. It stores the data as CSV files in a directory named `madden_data`.
 
 ## Installation
