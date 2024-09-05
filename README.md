@@ -16,8 +16,6 @@ While it is common practice to model game outcomes as a binary variable (win or 
 
 To address this added complexity, I model the scores of each game separately by focusing on the matchups between the offense and defense. Specifically, I predict the score that the offense will achieve against a given defense. An added benefit of this approach is that it effectively doubles the number of training examples, as each game consists of two such matchups. However, this method also introduces some bias, as it assumes the performance of a team’s offense and defense are independent of each other. In reality, factors like momentum—where a successful offensive drive might positively influence defensive performance—can create interdependencies between the two.
 
-<img src="assets/score_modelling.png" width="300px">            <img src="assets/two_prediction_problems.png" width="300px">
-
 ## Challenges
 ### 1. Selecting relevant Player Ratings for each Games
 
@@ -27,7 +25,7 @@ Football is a sport heavily impacted by injuries, where even a star player like 
 
 Analyzing the data reveals that players listed as first-team depth (starters) participate in over 90% of the snaps on average. In contrast, second-team players see around 25% of the snaps, with even less playing time for those on the third team. Therefore, to simplify the analysis and focus on the most impactful players, I only consider those listed on the first depth team.
 
-![image](assets/depth_team_snaps.png)
+<img src="assets/depth_team_snaps.png" width="600px">
 
 ### 2. Handling Missing Data
 
@@ -45,8 +43,8 @@ While player ratings in each version of Madden provide a good measure of how pla
 	2.	Ratings between the 1st and 2nd quartiles
 	3.	Ratings between the 2nd and 3rd quartiles
 	4.	Ratings above the 3rd quartile
- 
-![image](assets/distribution_shift_in_player_ratings.png)
+
+ <img src="assets/distribution_shift_in_player_ratings.png" width="400px">
 
 
 This script downloads Madden ratings data for a given range of years from `https://maddenratings.weebly.com/`. It stores the data as CSV files in a directory named `madden_data`.
