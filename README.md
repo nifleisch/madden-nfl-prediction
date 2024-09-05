@@ -88,7 +88,7 @@ To rigorously assess the model’s overall performance, I tested it across the e
 
 An interesting observation emerged: the model’s accuracy increased with the predicted score spread. For the 52 games where the model predicted a spread of 8 points or more, it was correct 90% of the time. This suggests that when the model is more confident (i.e., predicts a larger margin of victory), its accuracy improves substantially.
 
-![image](assets/evaluation.png)
+![image](assets/evalution.png)
 
 
 ## Code
